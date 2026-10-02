@@ -1,0 +1,3341 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RunStor Bot</title>
+<script>
+// 在首次绘制前定好主题, 否则浅色用户会先看到一帧深色 (反之亦然)。
+// 这也是为什么主题/语言的选择存在 localStorage 而不是服务端配置:
+// 它们是"每台浏览器"的偏好, 一个人用深色不影响同事用浅色。
+(function () {
+  try {
+    var choice = localStorage.getItem("runstor-theme") || "auto";
+    var dark = choice === "dark" ||
+      (choice === "auto" && window.matchMedia &&
+       window.matchMedia("(prefers-color-scheme: dark)").matches);
+    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  } catch (error) {
+    document.documentElement.setAttribute("data-theme", "light");
+  }
+})();
+</script>
+<style>
+  /* 主题: 两套调色板 + 语义变量。
+     语义变量 (--ok-text / --err-text / --hover …) 是给"用了颜色的地方"用的:
+     只写 var(--xxx) 才能跟着主题走, 直接写 var(--warn-text) 这种字面量在浅色下会糊成一片。 */
+  :root, :root[data-theme="light"] {
+    --bg: #f5f7fa;
+    --side: #eceff4;
+    --panel: #ffffff;
+    --panel-2: #f2f5f9;
+    --panel-3: #e6ebf2;
+    --border: #d3dae4;
+    --text: #16202c;
+    --muted: #5c6b7f;
+    --accent: #1f6feb;
+    --accent-dim: #3b82f6;
+    --ok: #0f7b52;
+    --warn: #a26a00;
+    --err: var(--err);
+    --on-accent: #ffffff;
+    --hover: #e8eef7;
+    --ok-text: #0a7a4d;
+    --warn-text: var(--warn-text);
+    --err-text: var(--err-text);
+    --code-bg: #eef2f7;
+    --shadow: 0 8px 24px rgba(16, 32, 56, .10);
+    --overlay: rgba(20, 30, 45, .35);
+    --chip-warn-bg: #fdf3d7;
+    --chip-warn-border: #e0c36a;
+    --chip-warn-text: #6b4e00;
+    --chip-err-bg: #fdeaea;
+    --chip-err-border: #e5a2a2;
+    --chip-err-text: #a12626;
+    --chip-ok-bg: #e7f6ee;
+    --chip-ok-border: #9ed3b6;
+    --chip-ok-text: #14663f;
+    --chip-info-bg: #e8f1fe;
+    --chip-info-border: #a8c9f5;
+    --chip-info-text: #12457f;
+    --chip-neutral-bg: #eef1f5;
+    --chip-neutral-border: #cbd4e0;
+    --chip-neutral-text: #4d5a6b;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  /* 深色 (默认观感与之前一致) */
+  :root[data-theme="dark"] {
+    --bg: #0d1117;
+    --side: #11161d;
+    --panel: #171d26;
+    --panel-2: #1e2632;
+    --panel-3: var(--hover);
+    --border: #262f3b;
+    --text: #e4e9f0;
+    --muted: #8b98a9;
+    --accent: #4a9eff;
+    --accent-dim: #2d5f99;
+    --ok: #3ecf8e;
+    --warn: #f0b429;
+    --err: #f0616d;
+    --on-accent: #ffffff;
+    --hover: var(--hover);
+    --ok-text: var(--chip-ok-text);
+    --warn-text: var(--chip-warn-text);
+    --err-text: var(--chip-err-text);
+    --code-bg: #10161e;
+    --shadow: 0 8px 24px rgba(0, 0, 0, .45);
+    --overlay: rgba(0, 0, 0, .55);
+    --chip-warn-bg: var(--chip-warn-bg);
+    --chip-warn-border: var(--chip-warn-border);
+    --chip-warn-text: var(--chip-warn-text);
+    --chip-err-bg: var(--chip-err-bg);
+    --chip-err-border: var(--chip-err-border);
+    --chip-err-text: var(--chip-err-text);
+    --chip-ok-bg: #10281f;
+    --chip-ok-border: var(--chip-ok-border);
+    --chip-ok-text: var(--chip-ok-text);
+    --chip-info-bg: var(--chip-info-bg);
+    --chip-info-border: var(--chip-info-border);
+    --chip-info-text: var(--chip-info-text);
+    --chip-neutral-bg: #1a222c;
+    --chip-neutral-border: #33404f;
+    --chip-neutral-text: #a7b3c2;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    overflow: hidden;
+  }
+  button {
+    border-radius: 8px; border: 1px solid var(--border); background: var(--panel-2);
+    color: var(--text); cursor: pointer; font-family: inherit; font-size: 13px;
+    padding: 7px 13px; transition: .15s;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent-dim); background: var(--hover); }
+  button.primary { background: var(--accent-dim); border-color: var(--accent); color: var(--on-accent); }
+  button.primary:hover:not(:disabled) { background: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+  .check-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px;
+    color: var(--text); cursor: pointer; user-select: none; }
+  .check-inline input { margin: 0; }
+
+  /* 知识库 */
+  .kb-subnav { display: flex; align-items: center; gap: 6px; margin-bottom: 12px;
+    border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+  .kb-subtab { background: transparent; border-color: transparent; color: var(--muted);
+    font-size: 13px; padding: 4px 12px; border-radius: 999px; }
+  .kb-subtab:hover:not(:disabled) { background: var(--panel-2); color: var(--text); border-color: transparent; }
+  .kb-subtab.active { background: var(--panel-2); color: var(--text); font-weight: 600;
+    border-color: var(--line); }
+  .kb-section { margin-bottom: 18px; }
+  .kb-section h3 { font-size: 13.5px; margin: 0 0 6px 0; }
+  /* 选择本地文件: 外观就是全站的主按钮 (label 套隐藏的 file input 是标准做法,
+     这样能完全控制按钮外观, 而 <input type=file> 本身没法改样式) */
+  .kb-pick {
+    position: relative; overflow: hidden; display: inline-flex; align-items: center;
+    gap: 6px; border-radius: 8px; border: 1px solid var(--accent);
+    background: var(--accent-dim); color: var(--on-accent);
+    padding: 7px 14px; font-size: 13px; cursor: pointer; transition: .15s;
+  }
+  .kb-pick:hover { background: var(--accent); }
+  .kb-pick input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .kb-pick-text { pointer-events: none; }
+  /* 已导入文档: 表格 */
+  .kb-table-wrap { overflow-x: auto; }
+  table.kb-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.kb-table th, table.kb-table td {
+    text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  table.kb-table th {
+    font-size: 11.5px; font-weight: 600; color: var(--muted); white-space: nowrap;
+    border-bottom: 1px solid var(--line); text-transform: none;
+  }
+  table.kb-table tbody tr:hover { background: var(--panel-2); }
+  table.kb-table td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  table.kb-table td.time { white-space: nowrap; color: var(--muted); }
+  table.kb-table td.src { color: var(--muted); font-family: var(--mono); font-size: 11.5px;
+    max-width: 260px; overflow-wrap: anywhere; }
+  table.kb-table td.act { white-space: nowrap; text-align: right; }
+  .kb-staged { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+  .kb-staged-item { display: flex; align-items: center; gap: 8px; font-size: 12.5px;
+    border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; }
+  .kb-staged-name { font-weight: 600; overflow-wrap: anywhere; }
+  .kb-staged-ok { color: var(--muted); }
+  .kb-staged-error { color: var(--err-text); }
+  .kb-inbox { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+  .kb-inbox-item { display: flex; align-items: center; gap: 8px; font-size: 12.5px;
+    border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; }
+  .kb-inbox-name { font-family: var(--mono); overflow-wrap: anywhere; }
+  .kb-records { display: flex; flex-direction: column; gap: 4px; }
+  .kb-record { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    font-size: 12.5px; border-left: 2px solid var(--line); padding: 3px 0 3px 9px; }
+  .kb-record.bad { border-left-color: var(--err); }
+  .kb-record-time { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .kb-record-name { font-weight: 600; overflow-wrap: anywhere; }
+  .kb-record-origin { font-size: 11.5px; color: var(--muted); border: 1px solid var(--line);
+    border-radius: 999px; padding: 0 7px; }
+  .kb-record-detail { color: var(--muted); }
+  .kb-record-replaced { color: var(--warn-text); }
+  .kb-record-error { color: var(--err-text); }
+
+  /* 知识库导入区 */
+  .kb-drop { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    border: 1.5px dashed var(--line); border-radius: 10px; padding: 14px 16px;
+    color: var(--muted); font-size: 13px; margin: 6px 0 12px 0; transition: all .15s; }
+  .kb-drop.over { border-color: var(--accent); background: var(--panel-2); color: var(--text); }
+  .kb-file { position: relative; overflow: hidden; display: inline-flex; }
+  .kb-file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .kb-file span { display: inline-flex; padding: 3px 12px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--panel); cursor: pointer; font-size: 12.5px; }
+  .kb-file span:hover { border-color: var(--accent); color: var(--accent); }
+  .kb-import-result { font-size: 12.5px; color: var(--ok, var(--ok-text)); margin-top: 6px; }
+  .kb-import-result.warn { color: var(--warn-text); }
+  .kb-answer { margin-top: 10px; }
+  .kb-note { font-size: 12.5px; color: var(--warn-text); margin: 6px 0; line-height: 1.55; }
+  .kb-answer-body { font-size: 13.5px; line-height: 1.7; white-space: pre-wrap; margin: 6px 0 10px 0; }
+  .kb-terms { font-size: 11.5px; color: var(--muted); margin: 3px 0; overflow-wrap: anywhere; }
+  .kb-citations { margin-top: 10px; }
+  .kb-citations-title { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+  .kb-citation { border-left: 2px solid var(--line); padding: 4px 0 4px 10px; margin-bottom: 8px; }
+  .kb-citation.cited { border-left-color: var(--accent); }
+  .kb-citation-head { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; font-size: 12.5px; }
+  .kb-citation-index { font-weight: 600; color: var(--accent); }
+  .kb-citation-doc { font-weight: 600; }
+  .kb-citation-heading { color: var(--muted); }
+  .kb-citation-text { font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.55; }
+  .kb-docs { display: flex; flex-direction: column; gap: 6px; }
+  .kb-doc { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .kb-doc .top { display: flex; align-items: center; gap: 8px; }
+  .kb-doc-title { font-weight: 600; font-size: 13px; }
+  .kb-doc-meta { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+
+  /* 影响与处置建议 */
+  .diagnoses { margin: 8px 0 2px 14px; border-left: 2px solid var(--line); padding-left: 10px; }
+  .diagnoses-title { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+  .diagnosis { margin-bottom: 10px; }
+  .diagnosis-head { display: flex; align-items: baseline; gap: 8px; }
+  .diagnosis-name { font-weight: 600; font-size: 13px; }
+  .diagnosis-meta { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .diagnosis-meta.model { color: var(--accent); }
+  .diagnosis-line { font-size: 12.5px; margin-top: 3px; line-height: 1.55; }
+  .diagnosis-note { font-size: 12px; color: var(--warn-text); margin-top: 3px; }
+  .diagnosis-actions { margin: 3px 0 0 0; padding-left: 22px; font-size: 12.5px; line-height: 1.6; }
+  .diagnosis-sample { font-family: var(--mono); font-size: 11px; color: var(--muted);
+    margin-top: 4px; overflow-wrap: anywhere; }
+  .report-analysis { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+
+  /* 导出 PDF 的入口: 形状像按钮, 但本质是链接 (让浏览器处理下载与文件名) */
+  a.pdf-link {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 9px; border-radius: 999px; font-size: 12px;
+    border: 1px solid var(--line); background: var(--panel);
+    color: var(--text); text-decoration: none; cursor: pointer; white-space: nowrap;
+  }
+  a.pdf-link:hover { background: var(--panel-2); border-color: var(--accent); color: var(--accent); }
+  a.pdf-link::before { content: "⤓"; font-size: 12px; opacity: .75; }
+  button.ghost:hover:not(:disabled) { background: var(--panel-2); color: var(--text); border-color: transparent; }
+  textarea, input[type=text], input[type=password], select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; font-family: inherit; font-size: 14px; padding: 9px 12px; width: 100%;
+  }
+  textarea:focus, input:focus, select:focus { outline: none; border-color: var(--accent-dim); }
+  .muted { color: var(--muted); font-size: 13px; }
+  .mono { font-family: var(--mono); font-size: 12.5px; }
+
+  /* ---------- 布局 ---------- */
+  .app { display: flex; flex-direction: column; height: 100%; }
+  /* 顶栏: 品牌在左, 模型 / 主题 / 语言在右 —— 所有视图都在, 窄屏也不被抽屉挡住 */
+  .topbar {
+    display: flex; align-items: center; gap: 8px; flex: 0 0 auto;
+    padding: 9px 14px; border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  .topbar .spacer { flex: 1; }
+  .app-body { flex: 1; display: flex; min-height: 0; }
+  .model-pill {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px;
+    border-radius: 999px; padding: 4px 12px; max-width: 240px;
+  }
+  .model-pill #modelPillName {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--accent); font-weight: 600;
+  }
+
+  .sidebar {
+    width: 264px; flex: 0 0 264px; border-right: 1px solid var(--border);
+    background: var(--side); display: flex; flex-direction: column; min-height: 0;
+  }
+  .sidebar-head {
+    padding: 12px; border-bottom: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .brand { font-size: 14px; font-weight: 600; letter-spacing: .3px; }
+  /* 分段按钮组: 一组互斥的小按钮, 选中项高亮 */
+  .seg {
+    display: inline-flex; align-items: stretch; border: 1px solid var(--border);
+    border-radius: 8px; overflow: hidden; background: var(--panel);
+  }
+  .seg-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 28px; padding: 4px 7px; border: 0; border-radius: 0;
+    background: transparent; color: var(--muted); font-size: 11.5px; line-height: 1;
+  }
+  .seg-btn + .seg-btn { border-left: 1px solid var(--border); }
+  .seg-btn:hover:not(:disabled) { background: var(--hover); color: var(--text); border-color: transparent; }
+  .seg-btn.active { background: var(--panel-3); color: var(--accent); }
+  .seg-btn.active:hover { background: var(--panel-3); color: var(--accent); }
+  .mini-select {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; font-family: inherit; font-size: 12px; padding: 3px 6px;
+    cursor: pointer; max-width: 108px;
+  }
+  .mini-select:hover { border-color: var(--accent-dim); }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+  .session-scroll { flex: 1; overflow-y: auto; padding: 8px; min-height: 0; }
+  .session-group { font-size: 11.5px; color: var(--muted); padding: 10px 8px 5px; }
+  .session-item {
+    display: block; width: 100%; text-align: left; border: 1px solid transparent;
+    background: transparent; border-radius: 8px; padding: 8px 9px; margin-bottom: 2px;
+    cursor: pointer;
+  }
+  .session-item:hover { background: var(--panel-2); }
+  .session-item.active { background: var(--panel-2); border-color: var(--accent-dim); }
+  .session-item .row1 { display: flex; align-items: center; gap: 6px; }
+  .session-item .title {
+    flex: 1; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .session-item .submitted-mark { color: var(--ok); }
+  .session-item .row2 {
+    display: flex; align-items: center; gap: 6px; margin-top: 3px;
+    font-size: 11.5px; color: var(--muted);
+  }
+  .session-item .del {
+    border: none; background: transparent; color: var(--muted); padding: 0 4px;
+    font-size: 15px; line-height: 1; opacity: 0; border-radius: 4px;
+  }
+  .session-item:hover .del { opacity: 1; }
+  .session-item .del:hover { color: var(--err); background: transparent; }
+  .session-empty { color: var(--muted); font-size: 12.5px; padding: 14px 10px; text-align: center; }
+
+  .chat { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .chat-head {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 11px 20px; border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  .chat-head .title {
+    font-size: 14px; font-weight: 600; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; max-width: 46vw;
+  }
+  .chat-head .spacer { flex: 1; }
+  .badge {
+    font-size: 11.5px; padding: 2px 8px; border-radius: 20px; white-space: nowrap;
+    border: 1px solid var(--border); background: var(--panel-2); color: var(--muted);
+  }
+  .badge.mode-llm { color: var(--ok); border-color: var(--chip-ok-border); }
+  .badge.mode-demo { color: var(--warn); border-color: var(--chip-warn-border); }
+  .badge.kind-backup { color: var(--accent); border-color: var(--accent-dim); }
+  .badge.kind-restore { color: var(--accent); border-color: var(--chip-info-border); }
+  .badge.ready { color: var(--ok); border-color: var(--chip-ok-border); }
+  .badge.asking { color: var(--warn); border-color: var(--chip-warn-border); }
+
+  .messages { flex: 1; overflow-y: auto; padding: 20px; min-height: 0; }
+  .thread { max-width: 860px; margin: 0 auto; }
+
+  .msg { margin-bottom: 20px; }
+  .msg .who { font-size: 11.5px; color: var(--muted); margin-bottom: 6px; }
+  .msg.user .bubble {
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 11px 14px; white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .msg.agent .bubble { padding: 0; }
+
+  .empty-state { max-width: 640px; margin: 8vh auto 0; text-align: center; }
+  .empty-state h2 { font-size: 19px; margin: 0 0 10px; font-weight: 600; }
+  .empty-state p { margin: 0 0 22px; }
+  .samples { display: flex; flex-direction: column; gap: 9px; }
+  .sample {
+    text-align: left; border: 1px solid var(--border); background: var(--panel);
+    border-radius: 10px; padding: 11px 14px; font-size: 13.5px; line-height: 1.5;
+  }
+  .sample:hover { border-color: var(--accent-dim); }
+
+  .banner { border-radius: 8px; padding: 10px 13px; margin-top: 10px; font-size: 13px; }
+  .banner.warn { background: var(--chip-warn-bg); border: 1px solid var(--chip-warn-border); color: var(--chip-warn-text); }
+  .banner.err { background: var(--chip-err-bg); border: 1px solid var(--chip-err-border); color: var(--chip-err-text); }
+  .banner.info { background: var(--chip-info-bg); border: 1px solid var(--chip-info-border); color: var(--chip-info-text); }
+  .banner.ok { background: var(--chip-ok-bg); border: 1px solid var(--chip-ok-border); color: var(--chip-ok-text); }
+  .banner ul { margin: 5px 0 0; padding-left: 19px; }
+  .banner li { margin: 2px 0; }
+
+  .qlist { display: grid; gap: 10px; margin-top: 10px; }
+  .q { background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; padding: 12px 14px; }
+  .q .head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .q .text { font-weight: 500; }
+  .q .slot { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .q .hint { color: var(--warn); font-size: 12.5px; margin-top: 4px; }
+  .q .example { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+  .q .answering { display: flex; gap: 8px; margin-top: 9px; }
+  .q .answering input { flex: 1; }
+  /* 总结卡: 交付前让用户过一眼的中文清单 */
+  .summary-card {
+    border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+    overflow: hidden; margin-top: 6px;
+  }
+  .summary-card.submitted { border-color: var(--chip-ok-border); }
+  /* 被更新的一版取代的旧卡: 降透明度表示只作留档 */
+  .summary-card.stale { opacity: .6; }
+  .summary-card.stale .summary-title::after { content: "（已被后续修改取代）"; font-weight: 400; font-size: 11.5px; color: var(--muted); }
+  .summary-head {
+    display: flex; align-items: center; gap: 9px; padding: 11px 14px;
+    border-bottom: 1px solid var(--border); background: var(--panel-2);
+  }
+  .summary-head .spacer { flex: 1; }
+  .summary-title { font-weight: 600; font-size: 13.5px; }
+  .summary-body { padding: 4px 0; }
+  .summary-row {
+    display: flex; align-items: baseline; gap: 12px;
+    padding: 7px 14px; border-bottom: 1px solid var(--shadow);
+  }
+  .summary-row:last-child { border-bottom: none; }
+  .summary-label { flex: 0 0 108px; font-size: 12.5px; color: var(--muted); }
+  .summary-value { flex: 1; font-size: 13.5px; word-break: break-word; }
+  .summary-fix { flex: 0 0 auto; padding: 2px 9px; font-size: 12px; }
+  .summary-fix-space { flex: 0 0 0; }
+  .row-editor { flex: 1 1 100%; margin-top: 8px; }
+  .row-editor .q { background: var(--panel-2); border: 1px solid var(--border); }
+  .summary-warnings {
+    padding: 10px 14px; border-top: 1px solid var(--border);
+    background: var(--chip-warn-bg); color: var(--chip-warn-text); font-size: 12.5px;
+  }
+  .summary-warn-title { font-weight: 600; margin-bottom: 4px; }
+  .summary-warnings ul { margin: 0; padding-left: 18px; }
+  .summary-foot {
+    display: flex; align-items: center; gap: 11px; padding: 11px 14px;
+    border-top: 1px solid var(--border); background: var(--panel-2);
+  }
+  .summary-json { border-top: 1px solid var(--border); }
+  .summary-json > summary {
+    padding: 9px 14px; cursor: pointer; font-size: 12.5px; color: var(--muted);
+    list-style: none;
+  }
+  .summary-json > summary::-webkit-details-marker { display: none; }
+  .summary-json > summary::before { content: "▸ "; }
+  .summary-json[open] > summary::before { content: "▾ "; }
+  .summary-json .json-actions { display: flex; gap: 8px; padding: 0 14px 9px; }
+  .summary-json pre.json { max-height: 360px; }
+
+  /* 视图切换 */
+  .view-tabs { display: flex; gap: 6px; }
+  .view-tabs .tab {
+    flex: 1; padding: 6px 10px; font-size: 13px; background: transparent;
+    border-color: transparent; color: var(--muted);
+  }
+  .view-tabs .tab:hover { background: var(--panel-2); color: var(--text); border-color: transparent; }
+  .view-tabs .tab.active {
+    background: var(--panel-2); border-color: var(--border); color: var(--text); font-weight: 600;
+  }
+
+  /* 巡检 */
+  .inspect-wrap { max-width: 900px; margin: 0 auto; }
+  .inspect-form {
+    border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+    padding: 16px 18px;
+  }
+  .inspect-form h2 { font-size: 15px; margin: 0 0 6px; }
+  .inspect-form .warn-line {
+    background: var(--chip-warn-bg); border: 1px solid var(--chip-warn-border); color: var(--chip-warn-text);
+    border-radius: 8px; padding: 9px 12px; font-size: 12.5px; margin: 10px 0 14px;
+  }
+  .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+  .field-grid .full { grid-column: 1 / -1; }
+  @media (max-width: 640px) { .field-grid { grid-template-columns: 1fr; } }
+
+  .report {
+    border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+    margin-top: 16px; overflow: hidden;
+  }
+  .report-head {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 12px 15px; border-bottom: 1px solid var(--border); background: var(--panel-2);
+  }
+  .report-head .target { font-weight: 600; }
+  .report-head .spacer { flex: 1; }
+  .report-meta { padding: 9px 15px; font-size: 12.5px; color: var(--muted); }
+  .report-meta div { margin: 2px 0; }
+  .report-failed { padding: 14px 15px; }
+  .finding { border-top: 1px solid var(--shadow); padding: 10px 15px; }
+  .finding .row1 { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+  .finding .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+  .finding .dot.ok { background: var(--ok); }
+  .finding .dot.warn { background: var(--warn); }
+  .finding .dot.critical { background: var(--err); }
+  .finding .dot.unknown { background: var(--muted); }
+  .finding .name { font-size: 13.5px; font-weight: 600; }
+  .finding .summary { flex: 1; font-size: 13px; }
+  .finding details { margin-top: 6px; }
+  .finding details > summary {
+    cursor: pointer; font-size: 12.5px; color: var(--muted); list-style: none;
+  }
+  .finding details > summary::-webkit-details-marker { display: none; }
+  .finding details > summary::before { content: "▸ "; }
+  .finding details[open] > summary::before { content: "▾ "; }
+  .finding ul { margin: 5px 0 0; padding-left: 20px; font-size: 12.5px; }
+  .finding li { margin: 2px 0; color: var(--muted); }
+  .finding pre { margin: 6px 0 0; font-size: 12px; max-height: 240px; }
+  .history-item {
+    border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2);
+    padding: 9px 11px; margin-bottom: 7px; cursor: pointer; font-size: 12.5px;
+  }
+  .history-item:hover { border-color: var(--accent-dim); }
+  .history-item .top { display: flex; align-items: center; gap: 7px; }
+  .history-item .host { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* 分步追问: 一次一题, 左右切换 */
+  .stepper {
+    border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+    margin-top: 10px; overflow: hidden;
+  }
+  .stepper.flash, .qlist .q.flash { border-color: var(--accent); box-shadow: 0 0 0 3px var(--hover); }
+  .step-head {
+    display: flex; align-items: center; gap: 10px; padding: 9px 14px;
+    border-bottom: 1px solid var(--border); background: var(--panel-2);
+  }
+  .step-head .spacer { flex: 1; }
+  .step-counter { font-size: 12.5px; color: var(--muted); }
+  .step-dots { display: flex; gap: 5px; }
+  .step-dots .dot {
+    width: 22px; height: 22px; padding: 0; border-radius: 50%; font-size: 11.5px;
+    color: var(--muted); background: transparent;
+  }
+  .step-dots .dot.active {
+    background: var(--accent-dim); border-color: var(--accent); color: var(--on-accent);
+  }
+  .step-body { min-height: 140px; }
+  .step-body .q { background: transparent; border: none; border-radius: 0; }
+  .step-foot {
+    display: flex; align-items: center; gap: 9px; padding: 10px 14px;
+    border-top: 1px solid var(--border); background: var(--panel-2);
+  }
+  .step-foot .spacer { flex: 1; }
+  .step-foot button:disabled { opacity: .35; }
+
+  .q .opt-label { font-size: 12px; color: var(--muted); margin-top: 9px; }
+  .q .choices { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .q .choices button { padding: 4px 11px; font-size: 12.5px; }
+  .q .choices button:hover { border-color: var(--accent); color: var(--on-accent); background: var(--accent-dim); }
+  .q .answering input::placeholder { color: var(--muted); }
+  .q.static { background: transparent; border-color: transparent; padding: 4px 0; }
+
+  .plan-card { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); overflow: hidden; margin-top: 4px; }
+  .plan-head {
+    display: flex; align-items: center; gap: 10px; padding: 11px 14px;
+    border-bottom: 1px solid var(--border); background: var(--panel-2);
+  }
+  .plan-head .spacer { flex: 1; }
+  pre.json {
+    margin: 0; background: var(--bg); padding: 14px; overflow: auto;
+    max-height: 420px; font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
+  }
+
+  .composer { border-top: 1px solid var(--border); background: var(--panel); padding: 12px 20px 16px; }
+  .composer-inner { max-width: 860px; margin: 0 auto; }
+  /* 输入框默认给足高度: 需求描述往往是一整句话, 只露两行时看不全,
+     边写边往上滚很别扭。上限用 vh 兜一层, 免得在矮屏上把对话区挤没。 */
+  .composer textarea {
+    min-height: 116px; max-height: min(340px, 38vh);
+    resize: none; line-height: 1.6;
+  }
+  .composer-foot { display: flex; align-items: center; gap: 10px; margin-top: 9px; }
+  .composer-foot .spacer { flex: 1; }
+  .composer select { width: auto; font-size: 12.5px; padding: 5px 9px; }
+
+  /* ---------- 设置抽屉 ---------- */
+  .overlay { position: fixed; inset: 0; background: var(--overlay); display: none; z-index: 20; }
+  .overlay.open { display: block; }
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 95vw);
+    background: var(--panel); border-left: 1px solid var(--border);
+    padding: 20px; overflow-y: auto; z-index: 21;
+    transform: translateX(100%); transition: transform .2s;
+  }
+  .drawer.open { transform: none; }
+  .drawer h2 { margin-top: 0; font-size: 15px; }
+  .drawer h3 { font-size: 13.5px; margin: 0 0 12px; }
+  .form-box { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 15px; }
+  .doc-drawer { width: min(720px, 96vw); padding: 0; display: flex; flex-direction: column; }
+  .doc-head {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 16px 20px; border-bottom: 1px solid var(--border); flex: 0 0 auto;
+  }
+  .doc-head h2 { margin: 0 0 3px; font-size: 15px; }
+  .doc-head .spacer { flex: 1; }
+  /* Markdown 排版: 只覆盖几种基本块, 与界面同一套配色变量 */
+  .doc-body { padding: 18px 20px 40px; overflow-y: auto; font-size: 13.5px; line-height: 1.75; }
+  .doc-body h1 { font-size: 19px; margin: 4px 0 12px; }
+  .doc-body h2 { font-size: 16px; margin: 22px 0 10px; padding-bottom: 5px; border-bottom: 1px solid var(--border); }
+  .doc-body h3 { font-size: 14.5px; margin: 18px 0 8px; }
+  .doc-body h4, .doc-body h5, .doc-body h6 { font-size: 13.5px; margin: 15px 0 6px; }
+  .doc-body p { margin: 9px 0; }
+  .doc-body ul, .doc-body ol { margin: 8px 0; padding-left: 22px; }
+  .doc-body li { margin: 3px 0; }
+  .doc-body code { font-family: var(--mono); font-size: 12.5px; background: var(--code-bg);
+    border-radius: 4px; padding: 1px 5px; }
+  .doc-body pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 11px 13px; overflow-x: auto; margin: 11px 0; }
+  .doc-body pre code { background: transparent; padding: 0; font-size: 12.5px; line-height: 1.6; }
+  .doc-body blockquote { margin: 11px 0; padding: 3px 0 3px 12px; border-left: 3px solid var(--border); color: var(--muted); }
+  .doc-body hr { border: 0; border-top: 1px solid var(--border); margin: 18px 0; }
+  .doc-body a { color: var(--accent); }
+  .doc-body table { border-collapse: collapse; margin: 11px 0; font-size: 12.5px; }
+  .doc-body th, .doc-body td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; }
+  .doc-body th { background: var(--panel-2); }
+  .doc-empty { padding: 30px 20px; color: var(--muted); }
+  .field { margin-bottom: 11px; }
+  .field label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
+  .field .tip { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .field-row { display: flex; gap: 10px; }
+  .field-row > .field { flex: 1; }
+  .row { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; margin-top: 11px; }
+  .profile { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 9px; background: var(--panel-2); }
+  .profile.active { border-color: var(--accent); }
+  .profile .top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .profile .name { font-weight: 600; }
+  .profile .detail { font-family: var(--mono); font-size: 11.5px; color: var(--muted); margin-top: 6px; word-break: break-all; }
+  .profile .unavail { color: var(--warn); font-size: 12.5px; margin-top: 6px; }
+  .profile .overridden { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  table.presets { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.presets th, table.presets td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  table.presets th { color: var(--muted); font-weight: 500; }
+
+  @media (max-width: 720px) {
+    .sidebar { position: fixed; inset: 0 auto 0 0; z-index: 30; transform: translateX(-100%); transition: transform .2s; }
+    .sidebar.open { transform: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- 顶栏: 品牌在左, 模型 / 主题 / 语言在右。
+       这些是"随时可能想改一下"的设置, 所以放在**所有视图都能看到**的顶栏里;
+       早先它们放在左侧栏, 窄屏 (<=720px) 时侧栏变成抽屉滑出屏幕, 就够不着了。 -->
+  <header class="topbar">
+    <span class="brand" data-i18n="RunStor Bot">RunStor Bot</span>
+    <span class="spacer"></span>
+    <button class="model-pill" id="settingsBtn" title="模型设置">
+      <span data-i18n="模型">模型</span>
+      <span id="modelPillName">—</span>
+    </button>
+    <!-- 主题: 三个图标按钮 (跟随系统 / 浅色 / 深色)。
+         用图标而不是下拉: 顶栏是"一眼看到当前状态"的地方, 图标比文字省地方, 也让
+         三个选项同时可见 —— 下拉得点开才知道有哪几种。 -->
+    <div class="seg" role="group" aria-label="主题" data-i18n-title="主题">
+      <button type="button" class="seg-btn" id="themeAuto" data-theme-choice="auto"
+              title="跟随系统" aria-label="跟随系统">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor"/>
+        </svg>
+      </button>
+      <button type="button" class="seg-btn" id="themeLight" data-theme-choice="light"
+              title="浅色" aria-label="浅色">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <circle cx="8" cy="8" r="3.2" fill="currentColor"/>
+          <g stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+            <path d="M8 1v1.8M8 13.2V15M1 8h1.8M13.2 8H15M3.1 3.1l1.3 1.3M11.6 11.6l1.3 1.3M12.9 3.1l-1.3 1.3M4.4 11.6l-1.3 1.3"/>
+          </g>
+        </svg>
+      </button>
+      <button type="button" class="seg-btn" id="themeDark" data-theme-choice="dark"
+              title="深色" aria-label="深色">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <path d="M13.5 10.4A6 6 0 0 1 5.6 2.5a6 6 0 1 0 7.9 7.9z" fill="currentColor"/>
+        </svg>
+      </button>
+    </div>
+    <!-- 语言: 两个按钮显示语言代号 (中 / EN)。
+         语言用图标表达不出"当前是哪种", 所以这里用最短的文字代号。 -->
+    <div class="seg" role="group" aria-label="语言" data-i18n-title="语言">
+      <button type="button" class="seg-btn" id="langZh" data-lang-choice="zh"
+              title="中文" aria-label="中文">中</button>
+      <button type="button" class="seg-btn" id="langEn" data-lang-choice="en"
+              title="English" aria-label="English">EN</button>
+    </div>
+  </header>
+
+  <div class="app-body">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+      <div class="view-tabs">
+        <button id="tabChat" class="tab active">对话</button>
+        <button id="tabInspect" class="tab">巡检</button>
+        <button id="tabKB" class="tab">知识库</button>
+      </div>
+      <button class="primary" id="newChatBtn">+ 新对话</button>
+      <div class="muted" id="modeLine" style="font-size:12px">加载中…</div>
+    </div>
+    <div class="session-scroll" id="sessionScroll">
+      <div class="session-empty">暂无历史对话</div>
+    </div>
+    <div class="session-scroll" id="inspectHistory" style="display:none"></div>
+  </aside>
+
+  <main class="chat" id="chatView">
+    <div class="chat-head">
+      <button class="ghost" id="menuBtn" style="display:none">☰</button>
+      <span class="title" id="chatTitle">新对话</span>
+      <span class="spacer"></span>
+      <span class="badge" id="kindBadge" style="display:none"></span>
+      <span class="badge" id="stateBadge" style="display:none"></span>
+      <span class="badge" id="catalogBadge"></span>
+      <span class="badge" id="driverBadge"></span>
+    </div>
+
+    <div class="messages" id="messages"></div>
+
+    <div class="composer">
+      <div class="composer-inner">
+        <textarea id="input" rows="4"
+          placeholder="描述备份或恢复需求…（Enter 发送，Shift+Enter 换行）"></textarea>
+        <div class="composer-foot">
+          <select id="kindSelect">
+            <option value="">自动识别意图</option>
+            <option value="backup">备份</option>
+            <option value="restore">恢复</option>
+          </select>
+          <span class="muted" id="composerHint">信息不完整时会逐项追问</span>
+          <span class="spacer"></span>
+          <button class="ghost" id="resetBtn" style="display:none">重新开始</button>
+          <button class="primary" id="sendBtn">发送</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <main class="chat" id="inspectView" style="display:none">
+    <div class="chat-head">
+      <span class="title">服务器巡检</span>
+      <span class="spacer"></span>
+      <span class="badge" id="inspectCountBadge"></span>
+    </div>
+    <div class="messages" id="inspectMessages"></div>
+  </main>
+
+  <main class="chat" id="kbView" style="display:none">
+    <div class="chat-head">
+      <span class="title">知识库</span>
+      <span class="spacer"></span>
+      <span class="badge" id="kbStatsBadge"></span>
+    </div>
+    <div class="messages" id="kbMessages"></div>
+  </main>
+  </div>
+</div>
+
+<div class="overlay" id="overlay"></div>
+<!-- 文档查看: 知识库里导入的 Markdown 原文, 直接在页面里打开 -->
+<aside class="drawer doc-drawer" id="docDrawer">
+  <div class="doc-head">
+    <div>
+      <h2 id="docTitle">—</h2>
+      <div class="muted" id="docMeta"></div>
+    </div>
+    <span class="spacer"></span>
+    <button class="ghost" id="docCloseBtn" title="关闭" aria-label="关闭">✕</button>
+  </div>
+  <div class="doc-body" id="docBody" data-no-i18n></div>
+</aside>
+<aside class="drawer" id="drawer">
+  <h2>应用与介质清单</h2>
+  <div class="muted" style="margin-bottom:10px">
+    能备份哪些应用、能备份到哪些介质服务器，由运行时接口给出（随环境变化）；接口不可用时退回内置清单，服务照常可用。
+  </div>
+  <div id="catalogBox"></div>
+  <div class="row"><button class="small" id="refreshCatalogBtn">刷新清单</button></div>
+
+  <h2 style="margin-top:22px">模型设置</h2>
+  <div id="runtimeNotice"></div>
+
+  <div class="form-box" id="formBox">
+    <h3 id="formTitle">添加模型</h3>
+    <div class="field">
+      <label for="presetSelect">厂商</label>
+      <select id="presetSelect"></select>
+      <div class="tip" id="presetTip"></div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="modelInput">模型名</label>
+        <input type="text" id="modelInput" placeholder="留空则用厂商默认模型">
+      </div>
+      <div class="field">
+        <label for="nameInput">配置名（可选）</label>
+        <input type="text" id="nameInput" placeholder="留空自动生成">
+      </div>
+    </div>
+    <div class="field">
+      <label for="baseUrlInput">接口地址 base_url</label>
+      <input type="text" id="baseUrlInput" placeholder="https://.../v1">
+    </div>
+    <div class="field">
+      <label for="apiKeyInput">API Key</label>
+      <input type="password" id="apiKeyInput" placeholder="粘贴密钥" autocomplete="off">
+      <div class="tip" id="apiKeyTip">
+        密钥只保存在服务器本地（0600 权限的运行态文件），不会回显、不写入配置文件。
+      </div>
+    </div>
+    <div class="row">
+      <button class="primary" id="saveBtn">保存并启用</button>
+      <button id="clearFormBtn">清空表单</button>
+      <span class="spacer" style="flex:1"></span>
+      <button id="testBtn">测试当前</button>
+    </div>
+    <div id="testResult"></div>
+  </div>
+
+  <h2 style="margin-top:20px">现有配置</h2>
+  <div id="profileList"></div>
+  <div class="row"><button id="refreshBtn">刷新</button></div>
+
+  <h2 style="margin-top:22px">常见厂商预设</h2>
+  <table class="presets" id="presetTable"></table>
+  <div class="muted" style="margin-top:10px">
+    本地模型建议 14B 以上；7B 以下抽取质量会明显下降，那种情况建议直接用 demo 模式演示。
+  </div>
+</aside>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const state = {
+    sessionId: null,   // 当前会话; null 表示还没发送过内容的新对话
+    kind: "backup",
+    status: "",
+    busy: false,
+    stepIndex: 0,      // 分步追问当前停在第几题
+    sessions: [],
+    presets: [],
+    presetsByName: {},
+    editingName: null,
+  };
+
+  const SAMPLES = [
+    "周天全备份oracle数据库，每天增量备份，oracle使用系统认证，备份整个实例，并发设置为4",
+    "Oracle数据库出故障了，从生产Oracle实例周全备恢复到2026-09-25 10:30:00这个时间点，恢复到原机",
+    "每天凌晨2点全量备份MySQL到本地磁盘 /u01/backup，保留30天，每周五做一次恢复演练",
+  ];
+
+  const CUSTOM_PRESET = "__custom__";
+  // 默认选中的厂商。不能取列表第一项 —— 那是按字母序排的 azure_openai,
+  // 而它必须手填 base_url 与模型名, 作为默认值等于让用户先撞一次墙。
+  const DEFAULT_PRESET = "deepseek";
+
+  // ---------- 通用请求 ----------
+
+  async function api(method, path, body) {
+    // 服务端消息 (报错、提示、状态标签) 也随语言走, 所以每个请求都带上 lang
+    const separator = path.indexOf("?") === -1 ? "?" : "&";
+    path = path + separator + "lang=" + (i18n.lang === "en" ? "en" : "zh");
+    const options = { method, headers: {} };
+    if (body !== undefined) {
+      options.headers["Content-Type"] = "application/json";
+      options.body = JSON.stringify(body);
+    }
+    const response = await fetch(path, options);
+    const text = await response.text();
+    let payload = null;
+    try { payload = text ? JSON.parse(text) : null; } catch (e) { payload = { raw: text }; }
+    if (!response.ok) {
+      const error = (payload && payload.error) || {};
+      throw {
+        status: response.status,
+        kind: error.kind || ("http_" + response.status),
+        message: error.message || i18n.tf("请求失败 ({0})", response.status),
+        hint: error.hint || "",
+        detail: error.detail || "",
+      };
+    }
+    return payload;
+  }
+
+  // 所有动态内容都走 createElement + textContent, 不拼 innerHTML ——
+  // 需求文本与模型输出都属于不可信输入。
+  // el 建元素; 文案自动过一遍词典 (中文原文当键, 查不到就原样)。
+  //
+  // 自动翻译是刻意的: 界面文案绝大多数都经由 el() 落地, 在那里截一道比在每个调用点
+  // 写 t("...") 少改几百处、也不会漏。反过来, **用户数据绝不能自动翻译** ——
+  // 一份标题就叫"内存"的中文文档在英文界面下会被翻成 "Memory", 那就闹笑话了,
+  // 所以数据用 elRaw。
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined && text !== null) node.textContent = i18n.t(text);
+    return node;
+  }
+
+  // elRaw 用于用户数据 / 服务端内容 (文档标题、日志证据、主机名、模型输出…)。
+  function elRaw(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined && text !== null) node.textContent = text;
+    // 自标 no-i18n: 语言切换时的 DOM 遍历会跳过这个子树, 不会把用户数据当文案翻
+    node.setAttribute("data-no-i18n", "");
+    return node;
+  }
+
+  // ---------- 主题与语言 ----------
+  //
+  // 两者都存在 localStorage: 它们是"每台浏览器"的偏好, 不该由服务端配置决定
+  // (一个人用深色不该影响同事用浅色)。
+
+  const THEME_KEY = "runstor-theme";
+  const LANG_KEY = "runstor-lang";
+
+  const i18n = {
+    lang: "zh",
+    messages: {},
+    // t 翻译一条文案 (中文原文 → 英文); 中文模式或查不到时原样返回
+    t(text) {
+      if (this.lang !== "en" || text === undefined || text === null) return text;
+      const key = String(text);
+      if (this.messages[key] !== undefined) return this.messages[key];
+      // 容忍首尾空白: 代码里为拼接常写成 "· {0} 字" 或 " 吗？…", 词典里存的是干净的那份。
+      // 差一个空格就静默不翻, 这种错很难靠人发现, 所以在这里抹平。
+      const trimmed = key.trim();
+      if (trimmed !== key && this.messages[trimmed] !== undefined) return this.messages[trimmed];
+      return key;
+    },
+    // tf 翻译模板并按 {0} {1} 占位替换 (英文语序可以不同, 所以要整句翻译)
+    tf(template, ...args) {
+      let out = this.t(template);
+      args.forEach((value, index) => { out = out.split("{" + index + "}").join(value); });
+      return out;
+    },
+    // tr 只翻译词典里有的整句, 用于服务端返回的结构化文案 (检查项名、状态标签…)
+    tr(text) { return this.t(text); },
+  };
+
+  function currentThemeChoice() {
+    try { return localStorage.getItem(THEME_KEY) || "auto"; } catch (error) { return "auto"; }
+  }
+
+  // resolveTheme 把"跟随系统"解析成实际的深/浅。
+  function resolveTheme(choice) {
+    if (choice === "dark" || choice === "light") return choice;
+    return (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches)
+      ? "dark" : "light";
+  }
+
+  function applyTheme(choice) {
+    document.documentElement.setAttribute("data-theme", resolveTheme(choice));
+    document.querySelectorAll("[data-theme-choice]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.themeChoice === choice);
+    });
+  }
+
+  function setTheme(choice) {
+    try { localStorage.setItem(THEME_KEY, choice); } catch (error) { /* 隐私模式下写不了, 不影响本次会话 */ }
+    applyTheme(choice);
+  }
+
+  // applyI18n 把静态 HTML 里的文案也翻一遍。
+  //
+  // 动态内容在 el() 里已经翻过, 这里管的是页面自带的那部分 (标题、按钮、说明),
+  // 以及 placeholder/title 这类属性。词典是"中文→英文"的, 对已经是英文的文本是
+  // 无操作, 所以重复调用安全。
+  function applyI18n(root) {
+    const scope = root || document.body;
+
+    // 翻译是**可逆**的: 把中文原文挂在节点上, 切回中文时还原。
+    //
+    // 不做这一步的话, 静态文案 (标签、按钮) 切到英文后再切回来仍是英文 —— 因为
+    // 词典是"中文→英文"的单向表, 已经变成英文的文本查不到对应条目。
+    const restoreText = (node) => {
+      const original = node.__i18nOriginal;
+      if (original === undefined) return false;
+      node.nodeValue = original;
+      delete node.__i18nOriginal;
+      return true;
+    };
+
+    const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, null);
+    const texts = [];
+    while (walker.nextNode()) texts.push(walker.currentNode);
+    texts.forEach((node) => {
+      const parent = node.parentElement;
+      if (!parent || parent.closest("[data-no-i18n]")) return;
+      const value = node.nodeValue;
+      const trimmed = value.trim();
+      if (!trimmed) return;
+      if (i18n.lang !== "en") {
+        restoreText(node);
+        return;
+      }
+      const translated = i18n.t(trimmed);
+      if (translated !== trimmed) {
+        if (node.__i18nOriginal === undefined) node.__i18nOriginal = value;
+        node.nodeValue = value.replace(trimmed, translated);
+      }
+    });
+
+    scope.querySelectorAll("[placeholder],[title]").forEach((node) => {
+      if (node.closest("[data-no-i18n]")) return;
+      ["placeholder", "title"].forEach((attr) => {
+        const value = node.getAttribute(attr);
+        if (!value) return;
+        const originals = node.__i18nAttrs || (node.__i18nAttrs = {});
+        if (i18n.lang !== "en") {
+          if (originals[attr] !== undefined) {
+            node.setAttribute(attr, originals[attr]);
+            delete originals[attr];
+          }
+          return;
+        }
+        const translated = i18n.t(value);
+        if (translated !== value) {
+          if (originals[attr] === undefined) originals[attr] = value;
+          node.setAttribute(attr, translated);
+        }
+      });
+    });
+
+    document.documentElement.lang = i18n.lang === "en" ? "en" : "zh-CN";
+    document.title = i18n.lang === "en"
+      ? "RunStor Bot · Backup & Restore Policy Agent"
+      : "RunStor Bot · 备份恢复策略 Agent";
+  }
+
+  async function loadMessages() {
+    if (i18n.lang !== "en") { i18n.messages = {}; return; }
+    try {
+      const payload = await api("GET", "/api/i18n?lang=en");
+      i18n.messages = payload.messages || {};
+    } catch (error) {
+      // 拿不到词典就退回中文原文: 界面仍然是可用的, 只是没翻译
+      i18n.messages = {};
+    }
+  }
+
+  // syncLangButtons 高亮当前语言的按钮。
+  function syncLangButtons() {
+    document.querySelectorAll("[data-lang-choice]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.langChoice === i18n.lang);
+    });
+  }
+
+  // setLang 切换语言: 记住选择 → 取词典 → 重画当前视图。
+  async function setLang(lang) {
+    i18n.lang = lang === "en" ? "en" : "zh";
+    try { localStorage.setItem(LANG_KEY, i18n.lang); } catch (error) { /* 同上 */ }
+    await loadMessages();
+    syncLangButtons();
+    applyI18n();
+    // 服务端返回的文案也要跟着换, 所以重画一遍当前视图
+    switchView(typeof inspectState !== "undefined" ? inspectState.view : "chat");
+    renderHeader();
+  }
+
+  function badge(text, className) {
+    return el("span", "badge " + (className || ""), text);
+  }
+
+  function banner(container, type, title, lines) {
+    if (!lines || !lines.length) return null;
+    const box = el("div", "banner " + type);
+    box.appendChild(el("div", null, title));
+    const list = el("ul");
+    lines.forEach((line) => list.appendChild(el("li", null, line)));
+    box.appendChild(list);
+    container.appendChild(box);
+    return box;
+  }
+
+  function setBusy(busy) {
+    state.busy = busy;
+    $("sendBtn").disabled = busy;
+    $("sendBtn").textContent = busy ? "处理中…" : "发送";
+  }
+
+  function scrollToBottom() {
+    const box = $("messages");
+    box.scrollTop = box.scrollHeight;
+  }
+
+  // focusQuestions 把当前待作答的问题带到视野里。
+  //
+  // 有题时绝不滚到底部: 那样用户得往回翻才能找到下一题 (上下列表时代就是这么别扭的)。
+  // 没有待作答的问题了才滚到底部, 那时底部就是要交付的计划。
+  function focusQuestions() {
+    const box = $("messages");
+    const target = box.querySelector(".stepper") || box.querySelector(".qlist .q");
+    if (!target) { scrollToBottom(); return; }
+    target.scrollIntoView({ block: "center" });
+    target.classList.add("flash");
+    setTimeout(() => target.classList.remove("flash"), 1400);
+  }
+
+  // ---------- 渲染: 一轮对话 ----------
+
+  function messageBlock(role, label) {
+    const wrap = el("div", "msg " + role);
+    wrap.appendChild(el("div", "who", label));
+    const bubble = el("div", "bubble");
+    wrap.appendChild(bubble);
+    $("messages").appendChild(wrap);
+    return bubble;
+  }
+
+  function renderUserText(text, label) {
+    const bubble = messageBlock("user", label || "你");
+    bubble.textContent = text;
+    return bubble;
+  }
+
+  // renderAgentTurn 渲染一个 agent 回合。answerable=true 时问题可作答。
+  function renderAgentTurn(turn, answerable, stepIndex) {
+    const bubble = messageBlock("agent", "Agent");
+
+    const head = el("div");
+    head.style.display = "flex";
+    head.style.gap = "8px";
+    head.style.flexWrap = "wrap";
+    head.appendChild(badge(turn.kind === "restore" ? "恢复计划" : "备份计划",
+      turn.kind === "restore" ? "kind-restore" : "kind-backup"));
+    const pending = (turn.questions || []).length;
+    head.appendChild(badge(
+      turn.status === "ready" ? "信息完整" : i18n.tf("待补充 {0} 项", pending),
+      turn.status === "ready" ? "ready" : "asking"));
+    if (turn.confidence) {
+      head.appendChild(badge(i18n.tf("置信度 {0}%", Math.round(turn.confidence * 100))));
+    }
+    if (turn.llm) head.appendChild(badge(i18n.tf("引擎 {0}", turn.llm)));
+    if (turn.turns) head.appendChild(badge(i18n.tf("第 {0} 轮", turn.turns)));
+    bubble.appendChild(head);
+
+    banner(bubble, "err", "存在无法自动修复的问题（可换能力更强的模型后重试）", turn.errors);
+    banner(bubble, "warn", "提示与风险", turn.warnings);
+    banner(bubble, "info", "处理过程", turn.notices);
+
+    const questions = turn.questions || [];
+    if (questions.length) bubble.appendChild(renderQuestions(questions, answerable, stepIndex));
+    return bubble;
+  }
+
+  // renderQuestions 渲染追问卡片: 先给推荐选择, 再留自定义输入。
+  //
+  // 推荐值来自后端槽位表 (choices 是封闭候选, suggestions 是常用值), 前端不硬编码 ——
+  // 否则新增引擎时两边会各写一份, 迟早不一致。
+  // renderQuestions 渲染追问。
+  //
+  // 可作答时用"左右分步"而不是上下长列表: 一次只看一题, 可上一题/下一题退回。
+  // 上下列表的问题在于一条回答提交后整个列表会重排, 用户得往回滚才能找到下一题;
+  // 分步之后"下一题"由控件接管, 位置始终明确。
+  function renderQuestions(questions, answerable, stepIndex) {
+    if (!answerable) return renderQuestionList(questions);
+    if (questions.length === 1) {
+      const list = el("div", "qlist");
+      list.appendChild(renderQuestionCard(questions[0]));
+      return list;
+    }
+    return renderQuestionStepper(questions, stepIndex);
+  }
+
+  // renderQuestionList 是历史轮次的只读形态: 紧凑列出, 不提供作答控件。
+  function renderQuestionList(questions) {
+    const list = el("div", "qlist");
+    list.style.opacity = "0.75";
+    questions.forEach((question) => {
+      const card = el("div", "q static");
+      const head = el("div", "head");
+      head.appendChild(el("span", "text", question.question));
+      head.appendChild(elRaw("span", "slot", question.slot));
+      if (question.scope) head.appendChild(el("span", "muted", "(" + question.scope + ")"));
+      card.appendChild(head);
+      if (question.example) card.appendChild(elRaw("div", "example", i18n.tf("示例：{0}", question.example)));
+      list.appendChild(card);
+    });
+    return list;
+  }
+
+  // renderQuestionCard 渲染单个可作答的问题卡: 推荐选择 + 自定义输入。
+  function renderQuestionCard(question) {
+    const card = el("div", "q");
+    card.dataset.slot = question.slot;
+
+    const head = el("div", "head");
+    head.appendChild(el("span", "text", question.question));
+    head.appendChild(el("span", "slot", question.slot));
+    if (question.scope) head.appendChild(el("span", "muted", "(" + question.scope + ")"));
+    card.appendChild(head);
+
+    if (question.hint) card.appendChild(elRaw("div", "hint", question.hint));
+
+    const choices = question.choices || [];
+    const suggestions = question.suggestions || [];
+    const options = choices.concat(suggestions);
+
+    if (options.length) {
+      card.appendChild(el("div", "opt-label",
+        choices.length ? "选择一项（也可以自己填写）" : "常用值（也可以自己填写）"));
+      const row = el("div", "choices");
+      options.forEach((option) => {
+        const button = el("button", null, option);
+        button.type = "button";
+        // 点推荐值直接提交 —— 它就是一个答案, 让用户点完还要再按一次提交是多余的
+        button.addEventListener("click", () => sendAnswers({ [question.slot]: option }, option));
+        row.appendChild(button);
+      });
+      card.appendChild(row);
+    } else if (question.example) {
+      card.appendChild(elRaw("div", "example", i18n.tf("示例：{0}", question.example)));
+    }
+
+    const row = el("div", "answering");
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = options.length
+      ? "或自己填写"
+      : (question.example ? i18n.tf("如 {0}", question.example) : i18n.t("请输入"));
+    row.appendChild(input);
+
+    const submit = el("button", "primary", "提交");
+    submit.type = "button";
+    submit.addEventListener("click", () => {
+      const value = input.value.trim();
+      if (!value) { input.focus(); return; }
+      sendAnswers({ [question.slot]: value }, value);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        submit.click();
+      }
+    });
+    row.appendChild(submit);
+    card.appendChild(row);
+    return card;
+  }
+
+  // renderQuestionStepper 逐题展示, 带步骤指示与上一题/下一题。
+  //
+  // startIndex 由调用方给: 刚回答完某题时传入它原来的位置, 于是"同一位置的新题"
+  // 就是下一题 —— 填过的那题会从待补充列表里消失, 列表随之前移。
+  function renderQuestionStepper(questions, startIndex) {
+    const wrap = el("div", "stepper");
+
+    const head = el("div", "step-head");
+    const counter = el("span", "step-counter");
+    head.appendChild(counter);
+    head.appendChild(el("span", "spacer"));
+    const dots = el("div", "step-dots");
+    head.appendChild(dots);
+    wrap.appendChild(head);
+
+    const body = el("div", "step-body");
+    wrap.appendChild(body);
+
+    const foot = el("div", "step-foot");
+    const prev = el("button", null, "← 上一题");
+    prev.type = "button";
+    const next = el("button", null, "下一题 →");
+    next.type = "button";
+    foot.appendChild(prev);
+    foot.appendChild(el("span", "spacer"));
+    foot.appendChild(next);
+    wrap.appendChild(foot);
+
+    let index = 0;
+    if (typeof startIndex === "number" && startIndex > 0) {
+      index = Math.min(startIndex, questions.length - 1);
+    }
+
+    function paint() {
+      counter.textContent = i18n.tf("第 {0} 题 / 共 {1}", index + 1, questions.length);
+
+      dots.textContent = "";
+      questions.forEach((item, position) => {
+        const dot = el("button", "dot" + (position === index ? " active" : ""), String(position + 1));
+        dot.type = "button";
+        dot.title = item.question;
+        dot.addEventListener("click", () => { index = position; paint(); });
+        dots.appendChild(dot);
+      });
+
+      body.textContent = "";
+      body.appendChild(renderQuestionCard(questions[index]));
+
+      prev.disabled = index === 0;
+      next.disabled = index === questions.length - 1;
+
+      state.stepIndex = index;
+    }
+
+    prev.addEventListener("click", () => { if (index > 0) { index--; paint(); } });
+    next.addEventListener("click", () => {
+      if (index < questions.length - 1) { index++; paint(); }
+    });
+
+    paint();
+    return wrap;
+  }
+
+  // renderSummary 渲染"待确认"的总结卡。
+  //
+  // 交付前让用户过一眼中文清单, 而不是直接扔一段 JSON: 计划里的值都是代码
+  // (os_auth / whole_instance), 只有后端知道它们对应的中文标签。
+  //
+  // options.editable 只在最后一轮为真; 历史轮次渲染成折叠的只读形态, 免得每改一次
+  // 就多出一张一模一样的卡把对话淹没。
+  function renderSummary(summary, plan, options) {
+    const settings = options || {};
+    const card = el("div", "summary-card" + (settings.submitted ? " submitted" : ""));
+
+    const head = el("div", "summary-head");
+    head.appendChild(el("span", "summary-title", settings.submitted ? "计划已定稿" : "计划待确认"));
+    head.appendChild(el("span", "spacer"));
+    if (summary.confidence) {
+      head.appendChild(badge(i18n.tf("置信度 {0}%", Math.round(summary.confidence * 100))));
+    }
+    if (settings.submitted) {
+      head.appendChild(badge("已提交", "ready"));
+    }
+    card.appendChild(head);
+
+    const body = el("div", "summary-body");
+    summary.rows.forEach((row) => {
+      body.appendChild(renderSummaryRow(row, settings));
+    });
+    card.appendChild(body);
+
+    if (summary.warnings && summary.warnings.length) {
+      const box = el("div", "summary-warnings");
+      box.appendChild(el("div", "summary-warn-title", "提示与风险"));
+      const list = el("ul");
+      summary.warnings.forEach((text) => list.appendChild(elRaw("li", null, text)));
+      box.appendChild(list);
+      card.appendChild(box);
+    }
+
+    if (settings.editable) {
+      const foot = el("div", "summary-foot");
+      const submit = el("button", "primary", settings.submitted ? "已定稿" : "提交计划");
+      submit.type = "button";
+      submit.disabled = !!settings.submitted;
+      if (!settings.submitted) {
+        submit.addEventListener("click", () => submitPlan(settings.sessionId, submit));
+      }
+      foot.appendChild(submit);
+
+      const hint = el("span", "muted",
+        settings.submitted ? "已定稿；再次修改会使其失效" : "点任意一项右侧的「修改」可单独调整，或在下方输入框说明改动");
+      foot.appendChild(hint);
+      card.appendChild(foot);
+    }
+
+    // 原始 JSON 收进折叠区: 需要的人能拿到, 平时不占地方
+    if (plan) {
+      const details = el("details", "summary-json");
+      if (!settings.editable) details.open = false;
+      const summaryLine = el("summary", null, "查看 / 复制计划 JSON");
+      details.appendChild(summaryLine);
+      const actions = el("div", "json-actions");
+      actions.appendChild(buildCopyButton(plan));
+      actions.appendChild(buildDownloadButton(plan));
+      details.appendChild(actions);
+      const pre = el("pre", "json");
+      pre.textContent = JSON.stringify(plan, null, 2);
+      details.appendChild(pre);
+      card.appendChild(details);
+    }
+
+    return card;
+  }
+
+  function renderSummaryRow(row, settings) {
+    const line = el("div", "summary-row");
+
+    const label = el("div", "summary-label", row.label);
+    const value = el("div", "summary-value", row.value);
+    line.appendChild(label);
+    line.appendChild(value);
+
+    if (settings.editable && row.slot) {
+      const fix = el("button", "summary-fix", "修改");
+      fix.type = "button";
+      fix.addEventListener("click", () => openRowEditor(line, row, settings));
+      line.appendChild(fix);
+    } else {
+      line.appendChild(el("div", "summary-fix-space", ""));
+    }
+    return line;
+  }
+
+  // openRowEditor 就地把一行换成可编辑控件。
+  //
+  // 修改本身走的是"提交该槽位的答案" —— 与追问完全同一条路径, 因此确定性回填、
+  // 合并语义、校验都自动一致, 不需要为"修改"另写一套。
+  function openRowEditor(line, row, settings) {
+    if (line.dataset.editing === "1") return;
+    line.dataset.editing = "1";
+
+    const editor = el("div", "row-editor");
+    const question = {
+      slot: row.slot,
+      question: row.label,
+      choices: row.choices || [],
+      suggestions: row.suggestions || [],
+    };
+    editor.appendChild(renderQuestionCard(question));
+
+    const cancel = el("button", "small", "取消");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => {
+      line.dataset.editing = "";
+      editor.remove();
+    });
+    editor.appendChild(cancel);
+
+    line.appendChild(editor);
+    const input = editor.querySelector("input");
+    if (input) input.focus();
+  }
+
+  function buildCopyButton(plan) {
+    const copy = el("button", "small", "复制 JSON");
+    copy.type = "button";
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(plan, null, 2));
+        copy.textContent = i18n.t("已复制");
+        setTimeout(() => { copy.textContent = i18n.t("复制 JSON"); }, 1500);
+      } catch (e) { alert("浏览器拒绝了剪贴板访问，请手动选中复制"); }
+    });
+    return copy;
+  }
+
+  function buildDownloadButton(plan) {
+    const download = el("button", "small", "下载 JSON");
+    download.type = "button";
+    download.addEventListener("click", () => {
+      const name = String(plan.task_name || "plan").replace(/[\\/:*?"<>|\s]+/g, "_");
+      const blob = new Blob([JSON.stringify(plan, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url; link.download = name + ".json"; link.click();
+      URL.revokeObjectURL(url);
+    });
+    return download;
+  }
+
+  // submitPlan 定稿: 记录用户确认的就是这份 JSON。
+  //
+  // MVP 不执行备份, 所以"提交"的含义是确认交付物; 之后再改动会让它失效 (服务端负责)。
+  async function submitPlan(sessionId, button) {
+    if (!sessionId) { alert("会话已失效"); return; }
+    button.disabled = true;
+    button.textContent = i18n.t("提交中…");
+    try {
+      const result = await api("POST", "/api/sessions/" + encodeURIComponent(sessionId) + "/submit");
+      renderAgentTurn({
+        kind: result.kind,
+        status: result.status,
+        warnings: result.warnings,
+        notices: result.notices,
+        confidence: result.confidence,
+        turns: result.turns,
+        llm: result.llm,
+      }, false, 0);
+      if (result.summary && result.plan) {
+        appendSummaryCard(result.summary, result.plan, {
+          editable: true, submitted: true, sessionId: sessionId,
+        });
+      }
+      await loadSessions();
+      scrollToBottom();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = i18n.t("提交计划");
+      alert(error.message);
+    }
+  }
+
+  function appendSummaryCard(summary, plan, options) {
+    // 新的总结卡取代之前的: 撤掉旧卡的操作按钮并折叠。
+    //
+    // 否则改一次就多一张可编辑的清单, 用户面对两张几乎一样的卡分不清该改哪张 ——
+    // 这也正是"上下长列表"时代的毛病, 不该在总结卡上重演。
+    document.querySelectorAll(".summary-card").forEach((old) => {
+      old.classList.add("stale");
+      old.querySelectorAll(".summary-fix").forEach((button) => button.remove());
+      const foot = old.querySelector(".summary-foot");
+      if (foot) foot.remove();
+      const details = old.querySelector(".summary-json");
+      if (details) details.open = false;
+    });
+
+    const wrap = el("div", "msg agent");
+    const bubble = el("div", "bubble");
+    bubble.appendChild(renderSummary(summary, plan, options));
+    wrap.appendChild(bubble);
+    $("messages").appendChild(wrap);
+  }
+
+  // ---------- 渲染: 整体状态 ----------
+
+  function renderEmptyState() {
+    $("messages").textContent = "";
+    const box = el("div", "empty-state");
+    box.appendChild(el("h2", null, "描述你的备份或恢复需求"));
+    box.appendChild(el("p", "muted",
+      i18n.t("用一句中文说清楚要备什么、什么时候备、存到哪里即可。信息不完整时系统会逐项追问，补齐后输出完整 JSON。也可以随时用一句话补充。未配置模型时自动使用内置 demo 客户端，可直接体验。")));
+    const samples = el("div", "samples");
+    SAMPLES.forEach((sample) => {
+      const button = el("button", "sample", sample);
+      button.type = "button";
+      button.addEventListener("click", () => {
+        $("input").value = sample;
+        $("input").focus();
+      });
+      samples.appendChild(button);
+    });
+    box.appendChild(samples);
+    $("messages").appendChild(box);
+  }
+
+  function currentTitle() {
+    const found = state.sessions.find((item) => item.id === state.sessionId);
+    return found ? found.title : (state.sessionId ? i18n.t("对话") : i18n.t("新对话"));
+  }
+
+  function renderHeader() {
+    $("chatTitle").textContent = currentTitle();
+    const kindBadge = $("kindBadge");
+    const stateBadge = $("stateBadge");
+
+    if (!state.sessionId) {
+      kindBadge.style.display = "none";
+      stateBadge.style.display = "none";
+      $("resetBtn").style.display = "none";
+      return;
+    }
+    kindBadge.style.display = "";
+    kindBadge.textContent = state.kind === "restore" ? "恢复" : "备份";
+    kindBadge.className = "badge " + (state.kind === "restore" ? "kind-restore" : "kind-backup");
+
+    stateBadge.style.display = "";
+    const ready = state.status === "ready";
+    stateBadge.textContent = ready ? "信息完整" : "待补充";
+    stateBadge.className = "badge " + (ready ? "ready" : "asking");
+    $("resetBtn").style.display = "";
+  }
+
+  function updateComposerHint() {
+    if (!state.sessionId) {
+      $("composerHint").textContent = i18n.t("信息不完整时会逐项追问");
+    } else if (state.status === "ready") {
+      $("composerHint").textContent = i18n.t("计划已完成；继续输入可在此基础上修改");
+    } else {
+      $("composerHint").textContent = i18n.t("可直接用一句话补充，或逐项填写上面的问题");
+    }
+  }
+
+  // ---------- 会话列表 ----------
+
+  async function loadSessions() {
+    const data = await api("GET", "/api/sessions");
+    state.sessions = data.sessions || [];
+    renderSessionList();
+    renderHeader();
+  }
+
+  function renderSessionList() {
+    const box = $("sessionScroll");
+    box.textContent = "";
+    if (!state.sessions.length) {
+      box.appendChild(el("div", "session-empty", "暂无历史对话"));
+      return;
+    }
+
+    // 按最后活动时间分组, 与常见对话产品的写法一致
+    const now = Date.now();
+    const groups = [["今天", []], ["最近 7 天", []], ["更早", []]];
+    state.sessions.forEach((item) => {
+      const days = (now - new Date(item.updated_at).getTime()) / 86400000;
+      if (days < 1) groups[0][1].push(item);
+      else if (days < 7) groups[1][1].push(item);
+      else groups[2][1].push(item);
+    });
+
+    groups.forEach((pair) => {
+      const label = pair[0], items = pair[1];
+      if (!items.length) return;
+      box.appendChild(el("div", "session-group", label));
+      items.forEach((item) => {
+        const row = el("div", "session-item" + (item.id === state.sessionId ? " active" : ""));
+        row.addEventListener("click", () => openSession(item.id));
+
+        const row1 = el("div", "row1");
+        row1.appendChild(elRaw("span", "title", item.title));
+        const remove = el("button", "del", "×");
+        remove.type = "button";
+        remove.title = "删除这条对话";
+        remove.addEventListener("click", (event) => {
+          event.stopPropagation();
+          deleteSession(item.id);
+        });
+        row1.appendChild(remove);
+        row.appendChild(row1);
+
+        const row2 = el("div", "row2");
+        row2.appendChild(el("span", null, item.kind === "restore" ? "恢复" : "备份"));
+        if (item.submitted) row2.appendChild(el("span", "submitted-mark", "· 已提交"));
+        else if (item.status === "ready") row2.appendChild(el("span", null, "· 已完成"));
+        else if (item.pending) row2.appendChild(el("span", null, i18n.tf("· 待补充 {0}", item.pending)));
+        else row2.appendChild(el("span", null, "· 进行中"));
+        row.appendChild(row2);
+
+        box.appendChild(row);
+      });
+    });
+  }
+
+  async function deleteSession(id) {
+    if (!confirm("删除这条对话记录？")) return;
+    try {
+      await api("DELETE", "/api/sessions/" + encodeURIComponent(id));
+      if (state.sessionId === id) { startNewChat(); }
+      await loadSessions();
+    } catch (error) { alert(error.message); }
+  }
+
+  async function openSession(id) {
+    if (state.busy) return;
+    try {
+      const detail = await api("GET", "/api/sessions/" + encodeURIComponent(id));
+      state.sessionId = detail.id;
+      state.kind = detail.kind || "backup";
+      state.status = detail.status || "";
+      renderDetail(detail);
+      renderSessionList();
+      renderHeader();
+      updateComposerHint();
+      $("input").value = "";
+      autoGrow();
+      $("input").focus();
+      closeSidebarOnMobile();
+    } catch (error) {
+      alert(error.message);
+      await loadSessions();
+    }
+  }
+
+  // renderDetail 用会话详情重建整段对话。
+  function renderDetail(detail) {
+    $("messages").textContent = "";
+    const transcript = detail.transcript || [];
+
+    // 老会话可能没有逐轮记录 (升级前创建的), 用需求原文兜底
+    if (!transcript.length && detail.text) {
+      renderUserText(detail.text);
+    }
+
+    transcript.forEach((record, index) => {
+      if (record.role === "user") {
+        renderUserText(record.text || "");
+        return;
+      }
+      const isLast = index === transcript.length - 1;
+      // 最后一轮用会话级别的 questions (服务端按当前状态重新推导过), 而不是
+      // 回放该轮存下的那一份 —— 否则槽位表新增推荐值后, 旧会话永远看不到。
+      const lastTurn = isLast && detail.status !== "ready"
+        ? Object.assign({}, record, { questions: detail.questions || record.questions })
+        : record;
+      renderAgentTurn(lastTurn, isLast && detail.status !== "ready", state.stepIndex);
+      // 只有最后一轮给可操作的总结卡; 历史轮次折叠只读, 免得每改一次就多一张卡
+      if (isLast && detail.plan && detail.summary) {
+        appendSummaryCard(detail.summary, detail.plan, {
+          editable: true,
+          submitted: !!detail.submitted_at,
+          sessionId: detail.id,
+        });
+      }
+    });
+
+    if (detail.status === "ready") { scrollToBottom(); } else { focusQuestions(); }
+  }
+
+  // ---------- 发送 ----------
+
+  function startNewChat() {
+    state.sessionId = null;
+    state.status = "";
+    state.kind = "backup";
+    $("input").value = "";
+    autoGrow();
+    renderEmptyState();
+    renderHeader();
+    updateComposerHint();
+    autoGrow();
+    $("input").focus();
+    closeSidebarOnMobile();
+  }
+
+  async function send() {
+    const text = $("input").value.trim();
+    if (!text || state.busy) return;
+    state.stepIndex = 0;
+    $("input").value = "";
+    autoGrow();
+
+    if (!state.sessionId) {
+      renderUserText(text);
+      setBusy(true);
+      try {
+        const result = await api("POST", "/api/parse", {
+          text: text,
+          kind: $("kindSelect").value,
+        });
+        adoptResult(result);
+        await loadSessions();
+      } catch (error) {
+        renderError(error);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    await sendFollowUp(text);
+  }
+
+  async function sendFollowUp(text) {
+    renderUserText(text);
+    setBusy(true);
+    try {
+      const result = await api("POST", "/api/clarify", {
+        session_id: state.sessionId,
+        text: text,
+      });
+      adoptResult(result);
+      await loadSessions();
+    } catch (error) {
+      renderError(error);
+    } finally {
+      setBusy(false);
+      scrollToBottom();
+    }
+  }
+
+  async function sendAnswers(answers, displayText) {
+    if (state.busy) return;
+    renderUserText(displayText || Object.values(answers).join("、"), "你的回答");
+    setBusy(true);
+    try {
+      const result = await api("POST", "/api/clarify", {
+        session_id: state.sessionId,
+        answers: answers,
+      });
+      adoptResult(result);
+      await loadSessions();
+    } catch (error) {
+      renderError(error);
+    } finally {
+      setBusy(false);
+      scrollToBottom();
+    }
+  }
+
+  function adoptResult(result) {
+    state.sessionId = result.session_id;
+    state.kind = result.kind || "backup";
+    state.status = result.status || "";
+
+    renderAgentTurn({
+      kind: result.kind,
+      status: result.status,
+      questions: result.questions,
+      warnings: result.warnings,
+      notices: result.notices,
+      errors: result.errors,
+      confidence: result.confidence,
+      turns: result.turns,
+      llm: result.llm,
+    }, result.status !== "ready", state.stepIndex);
+
+    if (result.status === "ready" && result.plan) {
+      appendSummaryCard(result.summary, result.plan, {
+        editable: true, submitted: false, sessionId: result.session_id,
+      });
+    }
+
+    renderHeader();
+    updateComposerHint();
+    if (result.status === "ready") { scrollToBottom(); } else { focusQuestions(); }
+  }
+
+  function renderError(error) {
+    const bubble = messageBlock("agent", "请求失败");
+    setTimeout(scrollToBottom, 0);
+    const lines = [];
+    if (error.hint) lines.push(error.hint);
+    if (error.detail) lines.push(error.detail);
+    if (lines.length) {
+      banner(bubble, "err", "[" + error.kind + "] " + error.message, lines);
+      return;
+    }
+    const box = el("div", "banner err");
+    box.textContent = "[" + error.kind + "] " + error.message;
+    bubble.appendChild(box);
+  }
+
+  async function resetCurrent() {
+    if (!state.sessionId) return;
+    setBusy(true);
+    try {
+      const result = await api("POST", "/api/sessions/" + state.sessionId + "/reset");
+      state.sessionId = result.session_id;
+      state.status = result.status || "";
+      state.kind = result.kind || "backup";
+      $("messages").textContent = "";
+      adoptResult(result);
+      await loadSessions();
+    } catch (error) {
+      renderError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ---------- 服务器巡检 ----------
+
+  const inspectState = { view: "chat", reports: [], history: [], busy: false };
+
+  function switchView(view) {
+    inspectState.view = view;
+    const isInspect = view === "inspect";
+    const isKB = view === "kb";
+    $("chatView").style.display = isInspect || isKB ? "none" : "";
+    $("inspectView").style.display = isInspect ? "" : "none";
+    $("kbView").style.display = isKB ? "" : "none";
+    $("tabChat").classList.toggle("active", !isInspect && !isKB);
+    $("tabInspect").classList.toggle("active", isInspect);
+    $("tabKB").classList.toggle("active", isKB);
+    $("newChatBtn").style.display = isInspect || isKB ? "none" : "";
+    $("modeLine").style.display = isInspect || isKB ? "none" : "";
+    if (isInspect) {
+      renderInspectView();
+      loadInspectionHistory().catch(() => {});
+    } else if (isKB) {
+      renderKnowledgeView();
+      loadKnowledge().catch(() => {});
+    } else {
+      renderSessionList();
+    }
+    // 侧栏内容随视图切换: 对话列表 / 巡检历史
+    $("sessionScroll").style.display = isInspect ? "none" : "";
+    $("inspectHistory").style.display = isInspect ? "" : "none";
+    closeSidebarOnMobile();
+  }
+
+  // ---------------------------------------------------------------------
+  // 知识库: 三个子页 —— 提问 / 导入文档 / 文档与记录
+  //
+  // 分成子页而不是一屏堆着: 导入是"偶尔做一次、要看清结果"的操作, 提问是高频操作,
+  // 放一起会让提问框被导入表单挤到下面; 文档与记录则是"翻查"用的。
+  // ---------------------------------------------------------------------
+
+  const kbState = {
+    page: "ask", documents: [], records: [], stats: {}, answer: null,
+    inbox: [], inboxDir: "", busy: false, pending: [],
+  };
+
+  // KB_ORIGIN_LABEL 只是兜底: 正常情况用服务端给的 origin_label。
+  const KB_ORIGIN_LABEL = { browser: "浏览器上传", paste: "粘贴文本", server: "服务器目录" };
+
+  const KB_PAGES = [
+    { id: "ask", label: "提问", title: "向知识库提问" },
+    { id: "import", label: "导入文档", title: "导入运维手册" },
+    { id: "docs", label: "文档与记录", title: "已导入文档与导入记录" },
+  ];
+
+  function renderKnowledgeView() {
+    const box = $("kbMessages");
+    box.textContent = "";
+    const wrap = el("div", "inspect-wrap");
+
+    // 子页切换
+    const nav = el("div", "kb-subnav");
+    KB_PAGES.forEach((page) => {
+      const button = el("button", "kb-subtab" + (kbState.page === page.id ? " active" : ""), page.label);
+      button.type = "button";
+      button.id = "kbPage-" + page.id;
+      button.addEventListener("click", () => {
+        kbState.page = page.id;
+        renderKnowledgeView();
+        loadKnowledge().catch(() => {});
+      });
+      nav.appendChild(button);
+    });
+    nav.appendChild(el("span", "spacer"));
+    nav.appendChild(el("span", "muted", KB_PAGES.find((p) => p.id === kbState.page).title));
+    wrap.appendChild(nav);
+
+    if (kbState.page === "ask") wrap.appendChild(renderKBAskPage());
+    if (kbState.page === "import") wrap.appendChild(renderKBImportPage());
+    if (kbState.page === "docs") wrap.appendChild(renderKBDocsPage());
+
+    box.appendChild(wrap);
+  }
+
+  // ---- 子页: 提问 ----
+
+  function renderKBAskPage() {
+    const card = el("div", "inspect-form");
+    card.appendChild(el("p", "muted",
+      "只根据已导入的文档回答，并标注引用编号；文档里没有的内容会说“没有写”，不会凭常识补。"));
+
+    const questionBox = el("div", "field full");
+    const questionInput = document.createElement("textarea");
+    questionInput.id = "kbQuestion";
+    questionInput.rows = 3;
+    questionInput.placeholder = "例如：zpool 报 checksum mismatch 该怎么处理？";
+    if (kbState.lastQuestion) questionInput.value = kbState.lastQuestion;
+    questionBox.appendChild(questionInput);
+    card.appendChild(questionBox);
+
+    const row = el("div", "row");
+    const askBtn = el("button", "primary", "提问");
+    askBtn.type = "button";
+    askBtn.id = "kbAskBtn";
+    askBtn.addEventListener("click", askKnowledge);
+    row.appendChild(askBtn);
+    const expandWrap = el("label", "check-inline");
+    expandWrap.title = "让模型把问题改写成多个检索词，提升召回；原问题的命中始终优先";
+    const expandBox = document.createElement("input");
+    expandBox.type = "checkbox";
+    expandBox.id = "kbExpand";
+    expandBox.checked = kbState.expand !== false;
+    expandBox.addEventListener("change", () => { kbState.expand = expandBox.checked; });
+    expandWrap.appendChild(expandBox);
+    expandWrap.appendChild(el("span", null, "用模型扩展检索词"));
+    row.appendChild(expandWrap);
+
+    if (!kbState.documents.length) {
+      const hint = el("span", "muted", "知识库还没有文档 →");
+      row.appendChild(hint);
+      const go = el("button", "ghost", "去导入");
+      go.type = "button";
+      go.addEventListener("click", () => { kbState.page = "import"; renderKnowledgeView(); });
+      row.appendChild(go);
+    }
+    card.appendChild(row);
+
+    const answerBox = el("div", "kb-answer");
+    answerBox.id = "kbAnswer";
+    card.appendChild(answerBox);
+    return card;
+  }
+
+  // ---- 子页: 导入文档 ----
+
+  function renderKBImportPage() {
+    const card = el("div", "inspect-form");
+    card.appendChild(el("p", "muted",
+      i18n.t("支持 .md / .markdown / .txt。同名文档会**替换**（改完手册重新导入是最常见的动作），每次导入都会留下记录。")));
+
+    // 1) 浏览器本地文件: 做成显眼的主入口
+    const local = el("div", "kb-section");
+    local.appendChild(el("h3", null, "从本机导入"));
+    const pickRow = el("div", "row");
+    const pickLabel = el("label", "kb-pick primary");
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.multiple = true;
+    fileInput.accept = ".md,.markdown,.txt,text/markdown,text/plain";
+    fileInput.id = "kbFiles";
+    fileInput.addEventListener("change", () => {
+      stageLocalFiles(Array.from(fileInput.files || []));
+      fileInput.value = "";
+    });
+    pickLabel.appendChild(fileInput);
+    pickLabel.appendChild(el("span", "kb-pick-text", "选择本地文件"));
+    pickRow.appendChild(pickLabel);
+    pickRow.appendChild(el("span", "muted", "可多选；也可以把文件直接拖到下面的区域"));
+    local.appendChild(pickRow);
+
+    const drop = el("div", "kb-drop");
+    drop.id = "kbDrop";
+    drop.appendChild(el("div", null, "把 .md 文件拖到这里松开"));
+    drop.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      drop.classList.add("over");
+    });
+    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+    drop.addEventListener("drop", (event) => {
+      event.preventDefault();
+      drop.classList.remove("over");
+      const files = event.dataTransfer ? Array.from(event.dataTransfer.files || []) : [];
+      stageLocalFiles(files);
+    });
+    local.appendChild(drop);
+
+    // 待导入清单: 先把选中的文件列出来, 让人看清要导入什么再确认
+    const staged = el("div", "kb-staged");
+    staged.id = "kbStaged";
+    local.appendChild(staged);
+    const stagedRow = el("div", "row");
+    stagedRow.id = "kbStagedRow";
+    local.appendChild(stagedRow);
+    card.appendChild(local);
+
+    // 2) 服务器目录
+    const server = el("div", "kb-section");
+    server.appendChild(el("h3", null, "从服务器目录导入"));
+    if (kbState.inboxDir) {
+      server.appendChild(elRaw("p", "muted", i18n.tf("只读取这个目录里的文档：{0}", kbState.inboxDir)));
+      const list = el("div", "kb-inbox");
+      list.id = "kbInbox";
+      server.appendChild(list);
+      const row = el("div", "row");
+      const refresh = el("button", "ghost", "刷新列表");
+      refresh.type = "button";
+      refresh.addEventListener("click", () => loadKBInbox().catch(() => {}));
+      row.appendChild(refresh);
+      const importAll = el("button", "primary", "导入全部未导入的");
+      importAll.type = "button";
+      importAll.addEventListener("click", () => {
+        const pending = kbState.inbox.filter((file) => !file.imported).map((file) => file.path);
+        if (!pending.length) { alert("目录里没有新的文件"); return; }
+        importFromInbox(pending);
+      });
+      row.appendChild(importAll);
+      server.appendChild(row);
+    } else {
+      server.appendChild(el("p", "muted",
+        "未配置导入目录。在 config.toml 里设置 server.kb.import_dir 指向一个目录，服务启动时会读该目录里的 .md/.markdown/.txt。"));
+    }
+    card.appendChild(server);
+
+    const result = el("div", "kb-import-result");
+    result.id = "kbImportResult";
+    card.appendChild(result);
+
+    // 渲染待导入清单与服务器文件列表 (放在 DOM 就位之后)
+    setTimeout(() => {
+      renderKBStaged();
+      renderKBInbox();
+    }, 0);
+    return card;
+  }
+
+  // stageLocalFiles 读取本地文件并放进"待导入"清单。
+  //
+  // 先列出来再导入, 而不是选完就立刻导入: 一次选十几个文件时, 用户需要看到自己选了
+  // 哪些、哪些超限, 再决定是否导入。
+  async function stageLocalFiles(files) {
+    if (!files.length) return;
+    for (const file of files) {
+      const item = { name: file.name, bytes: file.size, content: null, error: "" };
+      if (file.size > 2 * 1024 * 1024) {
+        item.error = "超过 2 MB 上限";
+      } else {
+        try {
+          item.content = await file.text();
+        } catch (error) {
+          item.error = i18n.tf("读取失败：{0}", error.message);
+        }
+      }
+      kbState.pending.push(item);
+    }
+    renderKBStaged();
+  }
+
+  function renderKBStaged() {
+    const box = $("kbStaged");
+    const row = $("kbStagedRow");
+    if (!box || !row) return;
+    box.textContent = "";
+    row.textContent = "";
+    const pending = kbState.pending;
+    if (!pending.length) {
+      box.appendChild(el("div", "muted", "还没有选择文件"));
+      return;
+    }
+    pending.forEach((item, index) => {
+      const line = el("div", "kb-staged-item");
+      line.appendChild(elRaw("span", "kb-staged-name", item.name));
+      line.appendChild(el("span", "spacer"));
+      line.appendChild(el("span", "muted", formatBytes(item.bytes)));
+      if (item.error) {
+        line.appendChild(el("span", "kb-staged-error", item.error));
+      } else {
+        line.appendChild(el("span", "kb-staged-ok", "待导入"));
+      }
+      const remove = el("button", "del", "×");
+      remove.type = "button";
+      remove.title = "移出清单";
+      remove.addEventListener("click", () => {
+        kbState.pending.splice(index, 1);
+        renderKBStaged();
+      });
+      line.appendChild(remove);
+      box.appendChild(line);
+    });
+
+    const usable = pending.filter((item) => item.content !== null);
+    const importBtn = el("button", "primary", i18n.tf("导入选中的 {0} 个文件", usable.length));
+    importBtn.type = "button";
+    importBtn.disabled = usable.length === 0;
+    importBtn.addEventListener("click", () => {
+      const documents = usable.map((item) => ({ name: item.name, content: item.content, origin: "browser" }));
+      importKnowledgeDocuments(documents).then(() => {
+        kbState.pending = kbState.pending.filter((item) => item.content === null);
+        renderKBStaged();
+      });
+    });
+    row.appendChild(importBtn);
+    const clear = el("button", "ghost", "清空清单");
+    clear.type = "button";
+    clear.addEventListener("click", () => { kbState.pending = []; renderKBStaged(); });
+    row.appendChild(clear);
+  }
+
+  function renderKBInbox() {
+    const box = $("kbInbox");
+    if (!box) return;
+    box.textContent = "";
+    if (!kbState.inbox.length) {
+      box.appendChild(el("div", "muted", "目录里还没有可导入的文件"));
+      return;
+    }
+    kbState.inbox.forEach((file) => {
+      const line = el("div", "kb-inbox-item");
+      line.appendChild(elRaw("span", "kb-inbox-name", file.path));
+      line.appendChild(el("span", "spacer"));
+      line.appendChild(el("span", "muted", formatBytes(file.bytes) + " · " + formatTime(file.modified)));
+      if (file.imported) line.appendChild(badge("已在库中", ""));
+      const one = el("button", "ghost", file.imported ? "重新导入" : "导入");
+      one.type = "button";
+      one.addEventListener("click", () => importFromInbox([file.path]));
+      line.appendChild(one);
+      box.appendChild(line);
+    });
+  }
+
+  async function loadKBInbox() {
+    if (!kbState.inboxDir) return;
+    const payload = await api("GET", "/api/kb/inbox");
+    kbState.inbox = payload.files || [];
+    renderKBInbox();
+  }
+
+  async function importFromInbox(paths) {
+    const result = $("kbImportResult");
+    try {
+      const payload = await api("POST", "/api/kb/import-path", { paths: paths });
+      const imported = payload.imported || [];
+      if (result) {
+        result.textContent = i18n.tf("已从服务器目录导入 {0} 份：", imported.length) +
+          imported.map((item) => i18n.tf("{0}（{1} 片段）", item.title, item.chunks)).join(", ");
+        result.className = "kb-import-result";
+      }
+      await loadKnowledge();
+      await loadKBInbox();
+    } catch (error) {
+      if (result) {
+        result.textContent = i18n.tf("导入失败：{0}", error.message) +
+          (error.hint ? i18n.tf("（{0}）", i18n.t(error.hint)) : "");
+        result.className = "kb-import-result warn";
+      }
+    }
+  }
+
+  // ---- 子页: 文档与记录 ----
+
+  function renderKBDocsPage() {
+    // 两张卡片要放进同一个容器再返回: 之前只 return 了文档卡, 记录卡虽然在内存里
+    // 建好了却从没进 DOM —— 表现是"记录页永远空的"。
+    const page = el("div", "kb-page");
+
+    const docsCard = el("div", "inspect-form");
+    docsCard.appendChild(el("h3", null, "已导入文档"));
+    docsCard.appendChild(el("p", "muted", "同名文档重新导入会替换旧版本，旧版本的去向见下面的导入记录。"));
+    const list = el("div", "kb-docs");
+    list.id = "kbDocs";
+    docsCard.appendChild(list);
+
+    const recordCard = el("div", "inspect-form");
+    const recordHead = el("div", "row");
+    recordHead.appendChild(el("h3", null, "导入记录"));
+    recordHead.appendChild(el("span", "spacer"));
+    const clearBtn = el("button", "ghost", "清空记录");
+    clearBtn.type = "button";
+    clearBtn.addEventListener("click", async () => {
+      if (!confirm("清空导入记录？文档不受影响。")) return;
+      try {
+        await api("DELETE", "/api/kb/records");
+        await loadKnowledge();
+      } catch (error) { alert(error.message); }
+    });
+    recordHead.appendChild(clearBtn);
+    recordCard.appendChild(recordHead);
+    recordCard.appendChild(el("p", "muted",
+      "记录每次导入的时间、来源、片段数与结果；失败也会留记录（含原因）。"));
+    const records = el("div", "kb-records");
+    records.id = "kbRecords";
+    recordCard.appendChild(records);
+
+    page.appendChild(docsCard);
+    page.appendChild(recordCard);
+    setTimeout(() => {
+      renderKBDocuments();
+      renderKBRecords();
+    }, 0);
+    return page;
+  }
+
+  function renderKBRecords() {
+    const box = $("kbRecords");
+    if (!box) return;
+    box.textContent = "";
+    if (!kbState.records.length) {
+      box.appendChild(el("div", "muted", "还没有导入记录"));
+      return;
+    }
+    kbState.records.forEach((record) => {
+      const line = el("div", "kb-record" + (record.ok ? "" : " bad"));
+      line.appendChild(el("span", "kb-record-time", formatTime(record.at)));
+      line.appendChild(el("span", "kb-record-name", record.name));
+      line.appendChild(el("span", "kb-record-origin", record.origin_label || KB_ORIGIN_LABEL[record.origin] || record.origin));
+      if (record.ok) {
+        line.appendChild(el("span", "kb-record-detail",
+          i18n.tf("{0} · {1} 片段 · {2}", record.title || "", record.chunks || 0, formatBytes(record.bytes))));
+        if (record.replaced) {
+          line.appendChild(elRaw("span", "kb-record-replaced", i18n.tf("替换了《{0}》", record.replaced)));
+        }
+      } else {
+        line.appendChild(elRaw("span", "kb-record-error", i18n.tf("失败：{0}", record.error || i18n.t("未知原因"))));
+      }
+      box.appendChild(line);
+    });
+  }
+
+  // openDocument 取文档原文并在抽屉里打开。
+  async function openDocument(id) {
+    const body = $("docBody");
+    const title = $("docTitle");
+    const meta = $("docMeta");
+    title.textContent = "…";
+    meta.textContent = "";
+    body.innerHTML = "";
+    openDrawer("docDrawer");
+    try {
+      const doc = await api("GET", "/api/kb/" + encodeURIComponent(id) + "/content");
+      title.textContent = doc.title || doc.source;
+      meta.textContent = i18n.tf("{0} · {1} 片段 · {2}", doc.source, doc.chunks, formatBytes(doc.bytes));
+      if (!doc.has_content) {
+        // 早先版本导入的文档没保存原文: 如实说明并指路, 而不是显示空白
+        body.appendChild(el("div", "doc-empty", i18n.t(
+          "这份文档是更早的版本导入的，当时没有保存原文。重新导入一次即可在这里查看。")));
+        return;
+      }
+      renderMarkdown(body, doc.content || "");
+    } catch (error) {
+      body.appendChild(elRaw("div", "doc-empty", error.message));
+    }
+  }
+
+  // renderMarkdown 把 Markdown 渲染成 HTML。
+  //
+  // 手写而不是引库: 项目零外部依赖 (构建环境不通外网)。安全性靠**先整体转义**再套标签 ——
+  // 文档是用户上传的, 里面完全可能带脚本标签; 所以先整体做 HTML 转义, 后面插入的都是
+  // 本函数自己的标签, 不存在注入面 (也正因如此不再支持原始 HTML 块)。
+  function renderMarkdown(container, text) {
+    const escapeHTML = (value) => String(value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const inline = (value) => escapeHTML(value)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
+      .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+    const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+    const html = [];
+    let inCode = false, codeLines = [], listType = "", tableRows = [];
+
+    const flushList = () => { if (listType) { html.push("</" + listType + ">"); listType = ""; } };
+    const flushTable = () => {
+      if (!tableRows.length) return;
+      const rows = tableRows.map((row) => row.replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim()));
+      html.push("<table>");
+      rows.forEach((cells, index) => {
+        // Markdown 表格的第二行是分隔行 (---), 跳过
+        if (index === 1 && cells.every((cell) => /^:?-{2,}:?$/.test(cell))) return;
+        const tag = index === 0 ? "th" : "td";
+        html.push("<tr>" + cells.map((cell) => "<" + tag + ">" + inline(cell) + "</" + tag + ">").join("") + "</tr>");
+      });
+      html.push("</table>");
+      tableRows = [];
+    };
+
+    for (const raw of lines) {
+      const line = raw.replace(/\s+$/, "");
+      if (/^\s*```/.test(line)) {
+        if (inCode) { html.push("<pre><code>" + escapeHTML(codeLines.join("\n")) + "</code></pre>"); codeLines = []; inCode = false; }
+        else { flushList(); flushTable(); inCode = true; }
+        continue;
+      }
+      if (inCode) { codeLines.push(raw); continue; }
+
+      const heading = line.match(/^(#{1,6})\s+(.*)$/);
+      if (heading) {
+        flushList(); flushTable();
+        const level = heading[1].length;
+        html.push("<h" + level + ">" + inline(heading[2]) + "</h" + level + ">");
+        continue;
+      }
+      if (/^\s*([-*_])\s*\1\s*\1[\s\1]*$/.test(line)) { flushList(); flushTable(); html.push("<hr>"); continue; }
+      if (/^\s*>/.test(line)) { flushList(); flushTable(); html.push("<blockquote>" + inline(line.replace(/^\s*>\s?/, "")) + "</blockquote>"); continue; }
+      if (/^\s*\|.*\|\s*$/.test(line)) { flushList(); tableRows.push(line.trim()); continue; }
+      const ordered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+      const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
+      if (ordered || bullet) {
+        flushTable();
+        const wanted = ordered ? "ol" : "ul";
+        if (listType !== wanted) { flushList(); html.push("<" + wanted + ">"); listType = wanted; }
+        html.push("<li>" + inline((ordered || bullet)[1]) + "</li>");
+        continue;
+      }
+      flushList(); flushTable();
+      if (!line.trim()) continue;
+      html.push("<p>" + inline(line) + "</p>");
+    }
+    flushList(); flushTable();
+    if (inCode && codeLines.length) html.push("<pre><code>" + escapeHTML(codeLines.join("\n")) + "</code></pre>");
+    container.innerHTML = html.join("\n");
+  }
+
+  function renderKBStats() {
+    const badgeNode = $("kbStatsBadge");
+    if (!badgeNode) return;
+    const stats = kbState.stats || {};
+    badgeNode.textContent = i18n.tf("{0} 份文档 · {1} 个片段", stats.documents || 0, stats.chunks || 0);
+  }
+
+  function renderKBDocuments() {
+    const box = $("kbDocs");
+    if (!box) return;
+    box.textContent = "";
+    if (!kbState.documents.length) {
+      box.appendChild(el("div", "session-empty", "还没有导入任何文档"));
+      renderKBStats();
+      return;
+    }
+
+    // 已导入文档用表格: 这些是"有若干属性的条目" (来源、片段、大小、字数、时间、标记),
+    // 表格能横向对齐着看, 卡片列表读起来是一段段文字。
+    const wrap = el("div", "kb-table-wrap");
+    const table = document.createElement("table");
+    table.className = "kb-table";
+    table.id = "kbTable";
+
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    [
+      { text: "文档", cls: "" },
+      { text: "来源文件", cls: "" },
+      { text: "片段", cls: "num" },
+      { text: "大小", cls: "num" },
+      { text: "字数", cls: "num" },
+      { text: "导入时间", cls: "" },
+      { text: "操作", cls: "act" },
+    ].forEach((column) => {
+      const cell = el("th", column.cls, column.text);
+      headRow.appendChild(cell);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    kbState.documents.forEach((doc) => {
+      const row = document.createElement("tr");
+
+      // 文档名: 做成可点的按钮, 点了在页面里打开原文
+      const nameCell = document.createElement("td");
+      const title = elRaw("button", "kb-doc-title", doc.title);
+      title.type = "button";
+      title.title = i18n.t("在页面中打开");
+      title.addEventListener("click", () => openDocument(doc.id).catch(() => {}));
+      nameCell.appendChild(title);
+      if (doc.seeded) {
+        const mark = badge(i18n.t("预置"), "");
+        mark.title = i18n.t("随部署预置的文档，升级时会跟随更新；重新导入同名文件即可改为自己管理");
+        nameCell.appendChild(mark);
+      }
+      row.appendChild(nameCell);
+
+      row.appendChild(elRaw("td", "src", doc.source));
+      row.appendChild(el("td", "num", String(doc.chunks || 0)));
+      row.appendChild(el("td", "num", formatBytes(doc.bytes)));
+      row.appendChild(el("td", "num", doc.runes ? String(doc.runes) : "—"));
+      row.appendChild(el("td", "time", formatTime(doc.added_at)));
+
+      const actions = el("td", "act");
+      const open = el("button", "ghost", i18n.t("打开"));
+      open.type = "button";
+      open.addEventListener("click", () => openDocument(doc.id).catch(() => {}));
+      actions.appendChild(open);
+      const remove = el("button", "ghost", i18n.t("删除"));
+      remove.type = "button";
+      remove.addEventListener("click", async () => {
+        if (!confirm(i18n.tf("删除《{0}》？检索与引用都会立即不再包含它。", doc.title))) return;
+        try {
+          await api("DELETE", "/api/kb/" + encodeURIComponent(doc.id));
+          await loadKnowledge();
+        } catch (error) { alert(error.message); }
+      });
+      actions.appendChild(remove);
+      row.appendChild(actions);
+
+      tbody.appendChild(row);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    box.appendChild(wrap);
+    renderKBStats();
+  }
+
+  function formatBytes(size) {
+    if (!size && size !== 0) return "";
+    if (size >= 1048576) return (size / 1048576).toFixed(1) + " MB";
+    if (size >= 1024) return Math.round(size / 1024) + " KB";
+    return size + " B";
+  }
+
+  function formatTime(value) {
+    if (!value) return "";
+    const date = new Date(value);
+    if (isNaN(date.getTime())) return String(value);
+    const pad = (n) => String(n).padStart(2, "0");
+    return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) +
+      " " + pad(date.getHours()) + ":" + pad(date.getMinutes());
+  }
+
+  async function loadKnowledge() {
+    const payload = await api("GET", "/api/kb");
+    kbState.documents = payload.documents || [];
+    kbState.records = payload.records || [];
+    kbState.stats = payload.stats || {};
+    const dir = kbState.stats.import_dir || "";
+    if (dir && dir !== kbState.inboxDir) {
+      kbState.inboxDir = dir;
+      // 第一次拿到目录时把文件列表也拉回来
+      loadKBInbox().catch(() => {});
+    } else {
+      kbState.inboxDir = dir;
+    }
+    renderKBDocuments();
+    renderKBRecords();
+    if ($("kbInbox")) renderKBInbox();
+  }
+
+  async function importKnowledgeDocuments(documents) {
+    const result = $("kbImportResult");
+    try {
+      const payload = await api("POST", "/api/kb/import", { documents: documents });
+      const imported = payload.imported || [];
+      const failed = payload.failed || [];
+      if (result) {
+        result.textContent = failed.length
+          ? i18n.tf("已导入 {0} 份；{1} 份失败：", imported.length, failed.length) +
+            failed.map((item) => i18n.tf("{0}（{1}）", item.name, item.error)).join("; ")
+          : i18n.tf("已导入 {0} 份文档", imported.length) +
+            (imported.length ? i18n.tf("：{0}", imported.map((item) => i18n.tf("{0}（{1} 片段）", item.title, item.chunks)).join(", ")) : "");
+        result.className = "kb-import-result" + (failed.length ? " warn" : "");
+      }
+      await loadKnowledge();
+    } catch (error) {
+      if (result) {
+        result.textContent = i18n.tf("导入失败：{0}", error.message);
+        result.className = "kb-import-result warn";
+      }
+    }
+  }
+
+  async function askKnowledge() {
+    if (kbState.busy) return;
+    const question = $("kbQuestion").value.trim();
+    if (!question) { alert("请先输入问题"); return; }
+    kbState.lastQuestion = question;
+    kbState.busy = true;
+    const button = $("kbAskBtn");
+    button.disabled = true;
+    button.textContent = i18n.t("检索中…");
+    try {
+      kbState.answer = await api("POST", "/api/kb/ask", {
+        question: question,
+        expand: $("kbExpand") ? $("kbExpand").checked : true,
+      });
+      renderKBAnswer();
+    } catch (error) {
+      kbState.answer = { mode: "error", note: "[" + error.kind + "] " + error.message, citations: [] };
+      renderKBAnswer();
+    } finally {
+      kbState.busy = false;
+      button.disabled = false;
+      button.textContent = i18n.t("提问");
+    }
+  }
+
+  const KB_MODE_LABEL = {
+    model: ["模型回答", "ready"],
+    retrieval_only: ["仅检索模式", ""],
+    no_match: ["没找到相关资料", "asking"],
+    error: ["出错了", "asking"],
+  };
+
+  function renderKBAnswer() {
+    const box = $("kbAnswer");
+    if (!box) return;
+    box.textContent = "";
+    const answer = kbState.answer;
+    if (!answer) return;
+
+    const head = el("div", "row");
+    const mode = KB_MODE_LABEL[answer.mode] || [answer.mode, ""];
+    head.appendChild(badge(mode[0], mode[1]));
+    if (answer.model) head.appendChild(badge(i18n.tf("模型 {0}", answer.model), ""));
+    if (answer.elapsed_ms) head.appendChild(el("span", "muted", answer.elapsed_ms + " ms"));
+    box.appendChild(head);
+
+    if (answer.note) {
+      box.appendChild(el("div", "kb-note", answer.note));
+    }
+    if (answer.answer) {
+      const body = el("div", "kb-answer-body");
+      body.textContent = plainText(answer.answer);
+      box.appendChild(body);
+    }
+    if ((answer.expanded || []).length) {
+      box.appendChild(elRaw("div", "kb-terms", i18n.tf("模型扩展的检索词：{0}", answer.expanded.join(", "))));
+    }
+    if ((answer.terms || []).length) {
+      box.appendChild(elRaw("div", "kb-terms", i18n.tf("实际检索词：{0}", answer.terms.join(", "))));
+    }
+    if ((answer.citations || []).length) {
+      box.appendChild(renderCitations(answer.citations));
+    }
+  }
+
+  // renderCitations 渲染引用。
+  //
+  // 标注"已引用"很重要: 检索到 5 条而回答只用了 2 条, 读者该知道哪 2 条是依据,
+  // 其余 3 条只是候选。
+  function renderCitations(citations) {
+    const wrap = el("div", "kb-citations");
+    wrap.appendChild(el("div", "kb-citations-title", "引用的资料"));
+    citations.forEach((citation) => {
+      const card = el("div", "kb-citation" + (citation.cited ? " cited" : ""));
+      const head = el("div", "kb-citation-head");
+      head.appendChild(el("span", "kb-citation-index", "[" + citation.index + "]"));
+      head.appendChild(el("span", "kb-citation-doc", plainText(citation.doc)));
+      if (citation.heading) {
+        head.appendChild(el("span", "kb-citation-heading", "§ " + plainText(citation.heading)));
+      }
+      head.appendChild(el("span", "spacer"));
+      if (citation.cited) head.appendChild(badge("回答已引用", "ready"));
+      head.appendChild(el("span", "muted", i18n.tf("相关度 {0}", (citation.score || 0).toFixed(1))));
+      card.appendChild(head);
+      card.appendChild(el("div", "kb-citation-text", plainText(citation.snippet)));
+      wrap.appendChild(card);
+    });
+    return wrap;
+  }
+
+  function renderInspectView() {
+    const box = $("inspectMessages");
+    box.textContent = "";
+
+    const wrap = el("div", "inspect-wrap");
+
+    const form = el("div", "inspect-form");
+    form.appendChild(el("h2", null, "服务器巡检"));
+    form.appendChild(el("p", "muted",
+      i18n.t("填目标机的地址、登录用户与密码（或私钥），系统通过 SSH 连上去检查 CPU、内存、磁盘分区、温度与严重错误日志。多台机器可用逗号或换行分隔。")));
+
+    const warning = el("div", "warn-line");
+    warning.textContent =
+      i18n.t("密码只用于本次连接，不会保存、不会写进日志或巡检记录。巡检需要从本服务所在主机能 SSH 到目标机。");
+    form.appendChild(warning);
+
+    const grid = el("div", "field-grid");
+
+    const hostsField = el("div", "field full");
+    hostsField.appendChild(el("label", null, "服务器地址（多个用逗号或换行分隔）"));
+    const hostsInput = document.createElement("textarea");
+    hostsInput.id = "inspectHosts";
+    hostsInput.rows = 3;
+    hostsInput.style.minHeight = "72px";
+    hostsInput.placeholder = "192.0.2.11\n192.0.2.12";
+    hostsField.appendChild(hostsInput);
+    grid.appendChild(hostsField);
+
+    const userField = el("div", "field");
+    userField.appendChild(el("label", null, "登录用户"));
+    const userInput = document.createElement("input");
+    userInput.type = "text";
+    userInput.id = "inspectUser";
+    userInput.placeholder = "root";
+    userField.appendChild(userInput);
+    grid.appendChild(userField);
+
+    const portField = el("div", "field");
+    portField.appendChild(el("label", null, "SSH 端口（默认 22）"));
+    const portInput = document.createElement("input");
+    portInput.type = "text";
+    portInput.id = "inspectPort";
+    portInput.placeholder = "22";
+    portField.appendChild(portInput);
+    grid.appendChild(portField);
+
+    const passwordField = el("div", "field full");
+    passwordField.appendChild(el("label", null, "密码"));
+    const passwordInput = document.createElement("input");
+    passwordInput.type = "password";
+    passwordInput.id = "inspectPassword";
+    passwordInput.placeholder = "登录密码";
+    passwordInput.autocomplete = "off";
+    passwordField.appendChild(passwordInput);
+    grid.appendChild(passwordField);
+
+    const keyField = el("div", "field full");
+    const keyToggle = el("label", null, "或使用私钥（可选，优先于密码）");
+    keyField.appendChild(keyToggle);
+    const keyInput = document.createElement("textarea");
+    keyInput.id = "inspectKey";
+    keyInput.rows = 3;
+    keyInput.style.minHeight = "72px";
+    keyInput.style.fontFamily = "var(--mono)";
+    keyInput.placeholder = "-----BEGIN OPENSSH PRIVATE KEY-----";
+    keyField.appendChild(keyInput);
+    grid.appendChild(keyField);
+
+    form.appendChild(grid);
+
+    const actions = el("div", "row");
+    const runButton = el("button", "primary", "开始巡检");
+    runButton.id = "inspectRunBtn";
+    runButton.type = "button";
+    runButton.addEventListener("click", runInspection);
+    actions.appendChild(runButton);
+
+    // 日志的影响分析与处置建议: 规则库总是会给结论, 这里决定要不要再让模型补长尾
+    const analyzeWrap = el("label", "check-inline");
+    analyzeWrap.title = "规则库认不出来的日志交给模型分析；规则结论始终保留";
+    const analyzeBox = document.createElement("input");
+    analyzeBox.type = "checkbox";
+    analyzeBox.id = "inspectAnalyze";
+    analyzeBox.checked = true;
+    analyzeWrap.appendChild(analyzeBox);
+    analyzeWrap.appendChild(el("span", null, "用模型分析日志"));
+    actions.appendChild(analyzeWrap);
+    actions.appendChild(el("span", "muted", "巡检只读取信息，不修改目标机任何配置"));
+    form.appendChild(actions);
+
+    wrap.appendChild(form);
+
+    // 已有结果直接渲染出来 (切换视图时不丢)
+    inspectState.reports.forEach((report) => wrap.appendChild(renderReport(report)));
+
+    box.appendChild(wrap);
+  }
+
+  function renderReport(report) {
+    const card = el("div", "report");
+
+    const head = el("div", "report-head");
+    head.appendChild(el("span", "target", report.target));
+    head.appendChild(el("span", "spacer"));
+    head.appendChild(statusBadge(report.status));
+    head.appendChild(badge(report.summary || report.summary_line || ""));
+    // 巡检一完成就能导出 PDF —— 报告在服务端按需生成 (同一记录永远是同一份内容)
+    head.appendChild(pdfLink(report, "导出 PDF"));
+    card.appendChild(head);
+
+    const meta = el("div", "report-meta");
+    if (report.error) {
+      const failed = el("div", "banner err");
+      failed.textContent = report.error;
+      meta.appendChild(failed);
+    } else {
+      const bits = [];
+      if (report.host_name) bits.push(i18n.tf("主机名 {0}", report.host_name));
+      if (report.os) bits.push(report.os);
+      if (report.kernel) bits.push(i18n.tf("内核 {0}", report.kernel));
+      if (report.uptime) bits.push(i18n.tf("运行 {0}", report.uptime));
+      if (bits.length) meta.appendChild(el("div", null, bits.join(" · ")));
+      meta.appendChild(el("div", null,
+        i18n.tf("认证 {0} · 耗时 {1} ms", i18n.tr(report.auth_mode), report.duration_ms || 0)));
+      if (report.host_key_fingerprint) {
+        meta.appendChild(elRaw("div", null, i18n.tf("主机指纹 {0}", report.host_key_fingerprint)));
+      }
+    }
+    card.appendChild(meta);
+    if (report.analysis) {
+      card.appendChild(el("div", "report-analysis", report.analysis));
+    }
+
+    (report.findings || []).forEach((finding) => {
+      const row = el("div", "finding");
+      const line = el("div", "row1");
+      line.appendChild(el("span", "dot " + finding.status, ""));
+      line.appendChild(el("span", "name", finding.name));
+      line.appendChild(el("span", "summary", finding.summary));
+      row.appendChild(line);
+
+      // 影响与处置建议: 报告里最该被照着做的部分, 放在证据上面
+      if ((finding.diagnoses || []).length) {
+        row.appendChild(renderDiagnoses(finding.diagnoses));
+      }
+
+      const details = finding.details || [];
+      if (details.length || finding.evidence) {
+        const box = document.createElement("details");
+        box.appendChild(el("summary", null, "详情与原始输出"));
+        if (details.length) {
+          const list = el("ul");
+          details.forEach((item) => list.appendChild(el("li", null, item)));
+          box.appendChild(list);
+        }
+        if (finding.evidence) {
+          const pre = el("pre", "json");
+          pre.textContent = finding.evidence;
+          box.appendChild(pre);
+        }
+        row.appendChild(box);
+      }
+      card.appendChild(row);
+    });
+
+    return card;
+  }
+
+  // pdfLink 生成一个"下载 PDF 报告"的入口。
+  //
+  // 用 <a download> 而不是 fetch + blob: 让浏览器自己处理下载, 文件名取自
+  // Content-Disposition (中文名走 RFC 5987), 也顺带支持右键"另存为"。
+  function pdfLink(report, label) {
+    const link = document.createElement("a");
+    link.className = "pdf-link";
+    link.href = "/api/inspect/" + encodeURIComponent(report.id) + "/report.pdf";
+    link.setAttribute("download", "");
+    link.title = "导出 PDF 报告";
+    link.textContent = label;
+    // 点在链接上不该触发外层的"打开这条记录"
+    link.addEventListener("click", (event) => event.stopPropagation());
+    return link;
+  }
+
+  // renderDiagnoses 画"影响与处置建议"。
+  //
+  // 每条问题: 标题 + 条数与结论来源 (规则库/模型分析), 然后影响一段、编号的处置步骤,
+  // 最后附一条原始日志供核对。结论来源必须显示 —— 规则结论与模型结论的可信度不同。
+  // plainText 去掉模型输出里可能带的 markdown 强调/代码标记 —— 网页不渲染它们, 会原样显示
+  function plainText(value) {
+    return String(value == null ? "" : value).replace(/\*\*/g, "").replace(/`/g, "");
+  }
+
+  function renderDiagnoses(items) {
+    const box = el("div", "diagnoses");
+    box.appendChild(el("div", "diagnoses-title", "影响与处置建议"));
+    items.forEach((item) => {
+      const card = el("div", "diagnosis");
+      const head = el("div", "diagnosis-head");
+      head.appendChild(el("span", "diagnosis-name", plainText(item.title)));
+      const meta = el("span", "diagnosis-meta");
+      meta.textContent = i18n.tf("{0} 条 · ", item.count || 0) +
+        (item.origin === "rule" ? "规则库" : item.origin === "model" ? "模型分析" : "需人工确认");
+      if (item.origin === "model") meta.classList.add("model");
+      head.appendChild(meta);
+      card.appendChild(head);
+
+      card.appendChild(el("div", "diagnosis-line", i18n.tf("影响：{0}", plainText(item.impact))));
+      if (item.note) {
+        card.appendChild(elRaw("div", "diagnosis-note", i18n.tf("说明：{0}", plainText(item.note))));
+      }
+      if ((item.actions || []).length) {
+        card.appendChild(el("div", "diagnosis-line", "处置："));
+        const list = el("ol", "diagnosis-actions");
+        (item.actions || []).forEach((action) => list.appendChild(el("li", null, plainText(action))));
+        box.appendChild(card);
+        card.appendChild(list);
+      } else {
+        box.appendChild(card);
+      }
+      if ((item.samples || []).length) {
+        card.appendChild(elRaw("div", "diagnosis-sample", i18n.tf("原始日志：{0}", plainText(item.samples[0]))));
+      }
+    });
+    return box;
+  }
+
+  function statusBadge(status) {
+    switch (status) {
+      case "critical": return badge("严重", "asking");
+      case "warn": return badge("告警", "asking");
+      case "unknown": return badge("无法判定", "");
+      default: return badge("正常", "ready");
+    }
+  }
+
+  async function runInspection() {
+    if (inspectState.busy) return;
+
+    const hosts = $("inspectHosts").value.trim();
+    const user = $("inspectUser").value.trim();
+    const password = $("inspectPassword").value;
+    const privateKey = $("inspectKey").value;
+    const port = parseInt($("inspectPort").value, 10) || 0;
+
+    if (!hosts) { alert("请填写服务器地址"); return; }
+    if (!user) { alert("请填写登录用户"); return; }
+    if (!password && !privateKey.trim()) { alert("请填写密码或私钥"); return; }
+
+    inspectState.busy = true;
+    const button = $("inspectRunBtn");
+    button.disabled = true;
+    button.textContent = i18n.t("巡检中…");
+
+    try {
+      const result = await api("POST", "/api/inspect", {
+        hosts: hosts.split(/[\n,;，；]+/).map((item) => item.trim()).filter(Boolean),
+        user: user,
+        port: port,
+        password: password,
+        private_key: privateKey,
+        analyze_logs: $("inspectAnalyze") ? $("inspectAnalyze").checked : true,
+      });
+      inspectState.reports = result.reports || [];
+      renderInspectView();
+      await loadInspectionHistory();
+    } catch (error) {
+      alert("[" + error.kind + "] " + error.message + (error.hint ? "\n" + error.hint : ""));
+    } finally {
+      inspectState.busy = false;
+      button.disabled = false;
+      button.textContent = i18n.t("开始巡检");
+      // 出结果后清掉密码: 一次巡检不需要它留在页面上
+      $("inspectPassword").value = "";
+    }
+  }
+
+  async function loadInspectionHistory() {
+    const data = await api("GET", "/api/inspect");
+    inspectState.history = data.reports || [];
+    renderInspectionHistory();
+    $("inspectCountBadge").textContent = i18n.tf("历史 {0} 次", inspectState.history.length);
+  }
+
+  function renderInspectionHistory() {
+    const box = $("inspectHistory");
+    box.textContent = "";
+    if (!inspectState.history.length) {
+      box.appendChild(el("div", "session-empty", "暂无巡检记录"));
+      return;
+    }
+    inspectState.history.forEach((item) => {
+      const row = el("div", "history-item");
+      const top = el("div", "top");
+      top.appendChild(el("span", "host", item.host_name || item.host));
+      top.appendChild(statusBadge(item.status));
+      const remove = el("button", "del", "×");
+      remove.type = "button";
+      remove.title = "删除这条记录";
+      remove.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        if (!confirm("删除这条巡检记录？")) return;
+        try {
+          await api("DELETE", "/api/inspect/" + encodeURIComponent(item.id));
+          await loadInspectionHistory();
+        } catch (error) { alert(error.message); }
+      });
+      top.appendChild(pdfLink(item, "PDF"));
+      top.appendChild(remove);
+      row.appendChild(top);
+      row.appendChild(el("div", "muted", item.target + " · " + item.summary));
+      row.addEventListener("click", () => openInspection(item.id));
+      box.appendChild(row);
+    });
+  }
+
+  async function openInspection(id) {
+    try {
+      const report = await api("GET", "/api/inspect/" + encodeURIComponent(id));
+      switchView("inspect");
+      inspectState.reports = [report];
+      renderInspectView();
+      $("inspectMessages").scrollTop = 0;
+    } catch (error) {
+      alert(error.message);
+    }
+  }
+
+  // ---------- 模型设置 ----------
+
+  // openDrawer 打开其中一个抽屉 (id 省略时为模型设置); closeDrawers 关掉所有抽屉。
+  function openDrawer(id) {
+    const target = typeof id === "string" ? $(id) : $("drawer");
+    document.querySelectorAll(".drawer").forEach((node) => node.classList.toggle("open", node === target));
+    $("overlay").classList.toggle("open", Boolean(target));
+  }
+
+  function closeDrawers() {
+    document.querySelectorAll(".drawer").forEach((node) => node.classList.remove("open"));
+    $("overlay").classList.toggle("open", false);
+  }
+
+  function currentPreset() {
+    return state.presetsByName[$("presetSelect").value] || null;
+  }
+
+  function fillFormFromPreset() {
+    const preset = currentPreset();
+    if (!preset) {
+      $("modelInput").value = "";
+      $("baseUrlInput").value = "";
+      $("presetTip").textContent = i18n.t("手动填写接口地址与模型名（任何 OpenAI 兼容端点都可以）。");
+      return;
+    }
+    if ($("modelInput").value.trim() === "" || $("modelInput").dataset.auto === "1") {
+      $("modelInput").value = preset.model || "";
+      $("modelInput").dataset.auto = "1";
+    }
+    $("baseUrlInput").value = preset.base_url || "";
+    $("presetTip").textContent = preset.note ||
+      (preset.base_url ? i18n.tf("接口地址已自动填好：{0}", preset.base_url) : "该厂商需要手动填写接口地址。");
+  }
+
+  function clearForm() {
+    state.editingName = null;
+    $("formTitle").textContent = i18n.t("添加模型");
+    $("nameInput").value = "";
+    $("nameInput").disabled = false;
+    $("modelInput").value = "";
+    $("modelInput").dataset.auto = "1";
+    $("baseUrlInput").value = "";
+    $("apiKeyInput").value = "";
+    $("apiKeyTip").textContent =
+      "密钥只保存在服务器本地（0600 权限的运行态文件），不会回显、不写入配置文件。";
+    if (state.presetsByName[DEFAULT_PRESET]) {
+      $("presetSelect").value = DEFAULT_PRESET;
+    } else if ($("presetSelect").options.length) {
+      $("presetSelect").value = $("presetSelect").options[0].value;
+    }
+    fillFormFromPreset();
+  }
+
+  function editProfile(profile) {
+    state.editingName = profile.name;
+    $("formTitle").textContent = i18n.tf("修改配置：{0}", profile.name);
+    $("nameInput").value = profile.name;
+    $("nameInput").disabled = true;
+
+    let matched = CUSTOM_PRESET;
+    state.presets.forEach((preset) => {
+      if (preset.base_url && preset.base_url === profile.base_url) matched = preset.name;
+    });
+    $("presetSelect").value = matched;
+    $("modelInput").value = profile.model || "";
+    $("modelInput").dataset.auto = "0";
+    $("baseUrlInput").value = profile.base_url || "";
+    $("apiKeyInput").value = "";
+    $("apiKeyTip").textContent = profile.has_key
+      ? "留空表示保留已保存的密钥；填写则替换。"
+      : "该配置尚未保存密钥。";
+    openDrawer("drawer");
+  }
+
+  async function saveProfile() {
+    const button = $("saveBtn");
+    button.disabled = true;
+    button.textContent = i18n.t("保存中…");
+    try {
+      const result = await api("POST", "/api/llm/profiles", {
+        name: $("nameInput").value.trim(),
+        preset: $("presetSelect").value === CUSTOM_PRESET ? "" : $("presetSelect").value,
+        model: $("modelInput").value.trim(),
+        base_url: $("baseUrlInput").value.trim(),
+        api_key: $("apiKeyInput").value,
+        activate: true,
+      });
+      const box = $("testResult");
+      box.textContent = "";
+      const lines = [i18n.tf("配置名：{0}", result.saved)];
+      if (result.activate_error) lines.push(i18n.tf("启用失败：{0}", result.activate_error));
+      if (result.warning) lines.push(result.warning);
+      banner(box, "ok", i18n.tf("已保存并设为当前模型（{0}）", result.mode), lines);
+      clearForm();
+      await loadProfiles();
+      await loadHealth();
+    } catch (error) {
+      const box = $("testResult");
+      box.textContent = "";
+      const lines = [];
+      if (error.hint) lines.push(error.hint);
+      banner(box, "err", "[" + error.kind + "] " + error.message, lines);
+    } finally {
+      button.disabled = false;
+      button.textContent = i18n.t("保存并启用");
+    }
+  }
+
+  async function deleteProfile(name) {
+    if (!confirm(i18n.tf("确定删除配置 {0} 吗？其中的密钥会一并删除。", name))) return;
+    try {
+      await api("DELETE", "/api/llm/profiles/" + encodeURIComponent(name));
+      if (state.editingName === name) clearForm();
+      await loadProfiles();
+      await loadHealth();
+    } catch (error) {
+      const box = $("testResult");
+      box.textContent = "";
+      const lines = [];
+      if (error.hint) lines.push(error.hint);
+      banner(box, "err", "[" + error.kind + "] " + error.message, lines);
+    }
+  }
+
+  async function testProfile(name) {
+    try {
+      renderTest(await api("POST", "/api/llm/test", { profile: name, deep: true }));
+    } catch (error) { alert(error.message); }
+  }
+
+  async function loadProfiles() {
+    const data = await api("GET", "/api/llm/profiles");
+    state.presets = data.presets || [];
+    state.presetsByName = {};
+    state.presets.forEach((preset) => { state.presetsByName[preset.name] = preset; });
+
+    // 当前模型显示在顶栏的胶囊里 (所有视图都能看到), 侧栏这行只说模式, 不重复模型名。
+    const pill = $("modelPillName");
+    if (pill) pill.textContent = data.active || i18n.t("无");
+    $("modeLine").textContent = data.mode === "demo"
+      ? i18n.t("demo 模式（无需 Key）")
+      : i18n.t("已接入模型");
+
+    const select = $("presetSelect");
+    const previous = select.value;
+    select.textContent = "";
+    state.presets.forEach((preset) => {
+      const option = document.createElement("option");
+      option.value = preset.name;
+      option.textContent = preset.display + "（" + preset.name + "）";
+      select.appendChild(option);
+    });
+    const custom = document.createElement("option");
+    custom.value = CUSTOM_PRESET;
+    custom.textContent = i18n.t("自定义 / 其他 OpenAI 兼容端点");
+    select.appendChild(custom);
+    if (previous) select.value = previous;
+    else if (state.presetsByName[DEFAULT_PRESET]) select.value = DEFAULT_PRESET;
+    if (state.editingName === null) fillFormFromPreset();
+
+    const notice = $("runtimeNotice");
+    notice.textContent = "";
+    if (!data.runtime_enabled) {
+      $("formBox").style.display = "none";
+      banner(notice, "warn", "网页改配置已关闭",
+        ["模型配置请在服务器上编辑 config.toml，或设置 server.allow_ui_config=true 后重启。"]);
+    } else {
+      $("formBox").style.display = "";
+    }
+
+    const list = $("profileList");
+    list.textContent = "";
+    (data.profiles || []).forEach((profile) => {
+      const card = el("div", "profile" + (profile.is_active ? " active" : ""));
+      const top = el("div", "top");
+      top.appendChild(el("span", "name", profile.name));
+      if (profile.is_active) top.appendChild(badge("使用中", "mode-llm"));
+      top.appendChild(badge(profile.available ? "可用" : "不可用",
+        profile.available ? "ready" : "asking"));
+      if (profile.source === "runtime") top.appendChild(badge("网页创建"));
+      else if (profile.source === "config") top.appendChild(badge("配置文件"));
+      else top.appendChild(badge("内置"));
+      if (profile.has_key) top.appendChild(badge("已配置 Key"));
+      card.appendChild(top);
+
+      // 每个片段单独翻译后再拼: 整句是"模型 · 地址 · Key"的形式, 拼完再翻就查不到了
+      card.appendChild(elRaw("div", "detail", [
+        profile.model || i18n.t("(未设 model)"),
+        profile.base_url || i18n.t("(未设 base_url)"),
+        i18n.tf("Key：{0}", profile.key_source || "none"),
+      ].join("  ·  ")));
+      if (profile.note) card.appendChild(el("div", "muted", profile.note));
+      if (profile.overrides_config) {
+        card.appendChild(el("div", "overridden", "同名配置文件项已被此配置覆盖"));
+      }
+      if (!profile.available && profile.unavailable_reason) {
+        card.appendChild(elRaw("div", "unavail", i18n.tf("不可用原因：{0}", profile.unavailable_reason)));
+      }
+
+      const row = el("div", "row");
+
+      const use = el("button", null, profile.is_active ? "已在使用" : "设为当前");
+      use.type = "button";
+      use.disabled = !profile.available || profile.is_active;
+      use.addEventListener("click", async () => {
+        try {
+          const result = await api("PUT", "/api/llm/active", { profile: profile.name });
+          if (result.warning) {
+            const box = $("testResult");
+            box.textContent = "";
+            banner(box, "warn", result.warning, []);
+          }
+          await loadProfiles();
+          await loadHealth();
+        } catch (error) { alert(error.message); }
+      });
+      row.appendChild(use);
+
+      const test = el("button", null, "连通性+冒烟");
+      test.type = "button";
+      test.addEventListener("click", async () => {
+        test.disabled = true;
+        test.textContent = i18n.t("测试中…");
+        await testProfile(profile.name);
+        test.disabled = false;
+        test.textContent = i18n.t("连通性+冒烟");
+      });
+      row.appendChild(test);
+
+      if (profile.editable) {
+        const edit = el("button", null, "编辑");
+        edit.type = "button";
+        edit.addEventListener("click", () => editProfile(profile));
+        row.appendChild(edit);
+
+        const remove = el("button", null, "删除");
+        remove.type = "button";
+        remove.addEventListener("click", () => deleteProfile(profile.name));
+        row.appendChild(remove);
+      }
+
+      card.appendChild(row);
+      list.appendChild(card);
+    });
+
+    const table = $("presetTable");
+    table.textContent = "";
+    const head = el("tr");
+    ["厂商", "base_url", "默认模型"].forEach((title) => head.appendChild(el("th", null, title)));
+    table.appendChild(head);
+    state.presets.forEach((preset) => {
+      const row = el("tr");
+      row.appendChild(el("td", null, preset.display));
+      row.appendChild(el("td", "mono", preset.base_url || "(需手填)"));
+      row.appendChild(el("td", "mono", preset.model || "(需手填)"));
+      table.appendChild(row);
+    });
+  }
+
+  function renderTest(result) {
+    const box = $("testResult");
+    box.textContent = "";
+    const label = result.profile ? i18n.tf("配置 {0}", result.profile) : "当前配置";
+    if (result.ok) {
+      const lines = [i18n.tf("耗时 {0} ms", result.elapsed_ms)];
+      if (result.model) lines.push(i18n.tf("模型 {0}", result.model));
+      if (result.reply) lines.push(i18n.tf("回复：{0}", result.reply));
+      if (result.json_mode !== undefined) {
+        lines.push(i18n.tf("结构化输出 {0}", result.json_mode ? i18n.t("支持") : i18n.t("不支持（已自动降级）")));
+      }
+      const smoke = result.smoke;
+      if (smoke) {
+        lines.push(smoke.ok ? i18n.t("抽取冒烟：通过") : i18n.tf("抽取冒烟：未通过 —— {0}", smoke.message || ""));
+        if (smoke.kind) {
+          lines.push(i18n.tf("冒烟识别：{0}", smoke.kind) + " / " +
+            (smoke.frequency || "-") + " / " + (smoke.time || "-"));
+        }
+      }
+      banner(box, "ok", i18n.tf("{0} 测试通过", label), lines);
+    } else {
+      const error = result.error || {};
+      const lines = [];
+      if (error.hint) lines.push(error.hint);
+      if (result.smoke && result.smoke.message) lines.push(result.smoke.message);
+      banner(box, "err",
+        label + "：[" + (error.kind || "unknown") + "] " + (error.message || "测试失败"), lines);
+    }
+  }
+
+  async function loadHealth() {
+    const health = await api("GET", "/health");
+    $("driverBadge").textContent = i18n.tf("引擎：{0}", (health.drivers || []).join(" / "));
+
+    // 清单来源要显眼: 用户得知道候选值是环境里真实存在的, 还是内置的通用取值
+    const info = health.catalog || {};
+    const badge = $("catalogBadge");
+    if (info.from_api) {
+      badge.textContent = i18n.tf("清单：运行时接口（{0} 应用 / {1} 介质）",
+        info.applications || 0, info.media_servers || 0);
+      badge.className = "badge mode-llm";
+    } else {
+      badge.textContent = i18n.t("清单：内置");
+      badge.className = "badge mode-demo";
+      badge.title = info.warning || "未配置清单接口";
+    }
+    renderCatalogBox(info);
+  }
+
+  function renderCatalogBox(info) {
+    const box = $("catalogBox");
+    box.textContent = "";
+
+    const lines = [
+      i18n.tf("来源：{0}", info.from_api ? i18n.t("运行时接口") : i18n.t("内置清单")),
+      i18n.tf("应用：{0} 个  ·  介质服务器：{1} 个", info.applications || 0, info.media_servers || 0),
+    ];
+    const kind = info.from_api ? "ok" : "warn";
+    const title = info.from_api ? "清单已从接口加载" : "清单为内置兜底";
+    banner(box, kind, title, lines);
+    if (info.warning) {
+      banner(box, "warn", "说明", [info.warning]);
+    }
+  }
+
+  function closeSidebarOnMobile() {
+    if (window.innerWidth <= 720) $("sidebar").classList.remove("open");
+  }
+
+  // ---------- 绑定 ----------
+
+  $("sendBtn").addEventListener("click", send);
+  $("input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      send();
+    }
+  });
+  // autoGrow 让输入框随内容长高, 上下界都取自 CSS ——
+  // 两处各写一份数字必然漂移 (改了 CSS 忘了改这里, 表现为长高后突然跳回去)。
+  function autoGrow() {
+    const box = $("input");
+    box.style.height = "auto";
+    const styles = getComputedStyle(box);
+    const min = parseFloat(styles.minHeight) || 0;
+    const max = parseFloat(styles.maxHeight) || 340;
+    const next = Math.min(Math.max(box.scrollHeight, min), max);
+    box.style.height = next + "px";
+    box.style.overflowY = box.scrollHeight > max ? "auto" : "hidden";
+  }
+  $("input").addEventListener("input", autoGrow);
+
+  $("newChatBtn").addEventListener("click", startNewChat);
+  $("tabChat").addEventListener("click", () => switchView("chat"));
+  $("tabInspect").addEventListener("click", () => switchView("inspect"));
+  $("tabKB").addEventListener("click", () => switchView("kb"));
+  $("resetBtn").addEventListener("click", resetCurrent);
+  $("settingsBtn").addEventListener("click", () => openDrawer("drawer"));
+  $("overlay").addEventListener("click", closeDrawers);
+
+  $("presetSelect").addEventListener("change", () => {
+    $("modelInput").dataset.auto = "1";
+    fillFormFromPreset();
+  });
+  $("modelInput").addEventListener("input", () => { $("modelInput").dataset.auto = "0"; });
+  $("saveBtn").addEventListener("click", saveProfile);
+  $("clearFormBtn").addEventListener("click", clearForm);
+  $("refreshBtn").addEventListener("click", () => { loadProfiles().catch(() => {}); });
+  $("refreshCatalogBtn").addEventListener("click", async () => {
+    const button = $("refreshCatalogBtn");
+    button.disabled = true;
+    button.textContent = i18n.t("刷新中…");
+    try {
+      const result = await api("POST", "/api/catalog/refresh");
+      await loadHealth();
+      if (result.warning) {
+        const box = $("catalogBox");
+        banner(box, "warn", "刷新提示", [result.warning]);
+      }
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      button.disabled = false;
+      button.textContent = i18n.t("刷新清单");
+    }
+  });
+  $("testBtn").addEventListener("click", async () => {
+    try { renderTest(await api("POST", "/api/llm/test", { deep: true })); }
+    catch (error) { alert(error.message); }
+  });
+  $("menuBtn").addEventListener("click", () => $("sidebar").classList.toggle("open"));
+  $("docCloseBtn").addEventListener("click", closeDrawers);
+  // 抽屉里按 Esc 关闭: 打开文档后最常见的动作就是"看完了关掉"
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeDrawers();
+  });
+
+  function syncMenuButton() {
+    $("menuBtn").style.display = window.innerWidth <= 720 ? "" : "none";
+  }
+  window.addEventListener("resize", syncMenuButton);
+  syncMenuButton();
+
+  // ---------- 启动 ----------
+
+  // initPreferences 读取本机保存的主题/语言并应用到界面。
+  async function initPreferences() {
+    i18n.lang = (function () {
+      try { return localStorage.getItem(LANG_KEY) === "en" ? "en" : "zh"; } catch (error) { return "zh"; }
+    })();
+    applyTheme(currentThemeChoice());
+    document.querySelectorAll("[data-theme-choice]").forEach((button) => {
+      button.addEventListener("click", () => setTheme(button.dataset.themeChoice));
+    });
+    document.querySelectorAll("[data-lang-choice]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (button.dataset.langChoice === i18n.lang) return;
+        setLang(button.dataset.langChoice).catch(() => {});
+      });
+    });
+    syncLangButtons();
+    // 跟随系统时要跟着系统主题变
+    if (window.matchMedia) {
+      const query = window.matchMedia("(prefers-color-scheme: dark)");
+      const onChange = () => { if (currentThemeChoice() === "auto") applyTheme("auto"); };
+      if (query.addEventListener) query.addEventListener("change", onChange);
+      else if (query.addListener) query.addListener(onChange);
+    }
+    await loadMessages();
+    applyI18n();
+  }
+
+  async function boot() {
+    await initPreferences();
+    renderEmptyState();
+    renderHeader();
+    updateComposerHint();
+    $("input").focus();
+
+    try { await loadHealth(); } catch (e) { /* 引擎清单拿不到不影响使用 */ }
+    try { await loadSessions(); } catch (e) { /* 历史拿不到就当新对话 */ }
+    try { await loadProfiles(); } catch (e) { $("modeLine").textContent = i18n.t("模型配置读取失败"); }
+    try { await loadInspectionHistory(); } catch (e) { /* 巡检历史拿不到不影响对话 */ }
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>

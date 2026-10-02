@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# 提交前门禁 (用 make hooks 启用: git config core.hooksPath .githooks)。
+#
+# 只跑"快且必须拦"的三件事, 都在一秒内完成:
+#   1. 明文密钥/私钥扫描 —— 这是发布到公开仓库前最不能出错的一条;
+#   2. 内网地址扫描 (同上, 只是提示确认);
+#   3. gofmt 检查 —— 未格式化的代码不该进历史, 否则以后每个提交都带着无关 diff。
+#
+# 要跳过: git commit --no-verify (但请先想清楚为什么)。
+# ---------------------------------------------------------------------------
+set -uo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root" || exit 1
+
+fail=0
+
+if ! output="$(bash scripts/secret-scan.sh 2>&1)"; then
+  echo "$output"
+  echo
+  echo "提交被拦下: 上面命中的内容不该进仓库。"
+  echo "确定是误报 (例如测试里的假样本) 时, 在同一个文件里写明 secret-scan:allow-test-key,"
+  echo "或者对本次提交使用 git commit --no-verify。"
+  fail=1
+fi
+
+unformatted="$(gofmt -l ./cmd ./internal 2>/dev/null)"
+if [ -n "$unformatted" ]; then
+  echo "提交被拦下: 以下文件未格式化, 请先执行 make fmt:"
+  echo "$unformatted"
+  fail=1
+fi
+
+exit "$fail"

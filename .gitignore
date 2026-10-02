@@ -1,0 +1,20 @@
+# 构建产物与安装包 (可重新生成)
+bin/
+build/
+releases/
+*.test
+
+# 运行态数据与本机配置 —— 可能含密钥, 绝不入库
+runtime.json
+config.toml
+sessions.json
+kb.json
+inspections.json
+known_hosts
+*.key
+*.pem
+env
+
+# 编辑器/系统
+.DS_Store
+*.swp

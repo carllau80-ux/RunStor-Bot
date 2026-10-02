@@ -1,0 +1,109 @@
+# RunStor Bot 配置示例 (TOML)
+#
+# 用法:
+#   cp config.example.toml config.toml        # 本地开发: 放在当前目录
+#   install 时: /etc/backup-restore-agent/config.toml  (0640 root:bra)
+#
+# 查找顺序: -config 参数 → BRA_CONFIG 环境变量 → ./config.toml
+#           → /etc/backup-restore-agent/config.toml
+#
+# 三条约定:
+#   1. **未知的键会导致启动失败** —— 拼错的键不会静默忽略, 这是有意的:
+#      否则"配置看着生效其实没生效"要查很久。
+#   2. 加密钥一律用引用: api_key_env (环境变量) 或 api_key_file (0600 文件)。
+#      明文 api_key 只允许出现在本地端点 (Ollama 之类) 上。
+#   3. 环境变量优先级高于本文件: BRA_PORT / BRA_HOST / BRA_CONFIG / BRA_API_KEY /
+#      BRA_BASE_URL / BRA_MODEL / BRA_RUNTIME / BRA_SESSIONS / BRA_KB / BRA_KB_INBOX /
+#      BRA_KB_SEED / BRA_INSPECT_REPORTS。
+
+[server]
+host = "0.0.0.0"          # 监听地址
+port = 8081               # 监听端口 (部署脚本会在 8081-8099 内实测挑一个空闲的)
+prompt_limit = 20000      # 需求文本最大长度 (字符)
+max_turns = 10            # 追问熔断轮次: 超过就返回当前最优结果, 绝不无限追问
+session_ttl_min = 120     # 对话会话闲置回收时间 (分钟)
+max_sessions = 30         # 保留的历史对话条数
+
+# 是否允许在网页上创建/修改模型配置 (选厂商、填 key)。
+# false = 关闭该能力, 模型配置只能改本文件。
+allow_ui_config = true
+runtime_path = ""         # 网页创建的模型配置落盘位置; 留空用默认
+session_path = ""         # 对话历史落盘位置; 留空用默认
+language = "zh-CN"        # 默认界面语言: zh-CN / en-US
+                          # 只作用于"没有 ?lang= 参数时"; 每台浏览器的选择存在本地
+
+[server.inspect]
+# 服务器巡检: ssh 连过去采集 CPU/内存/磁盘/温度/严重日志, 输出影响与处置建议。
+enabled = true
+concurrency = 4              # 同时巡检的主机数上限
+connect_timeout_seconds = 8  # SSH 连接超时
+command_timeout_seconds = 15 # 远端单项检查超时
+analyze_logs = true          # 是否用模型补充日志分析 (规则库结论总会给出)
+pdf_font = ""                # 导出 PDF 的拉丁字体 (TrueType 路径); 留空用内置字体
+host_key_policy = "tofu"     # tofu (默认: 未知主机接受但报告指纹) / strict / insecure
+known_hosts = ""             # 留空落到状态目录 (服务用户没有家目录)
+report_path = ""             # 巡检历史落盘位置; 留空用默认
+max_reports = 30             # 保留的历史条数
+
+[server.catalog]
+# "能备份哪些应用 / 能备份到哪些介质服务器"这份清单的来源接口。
+# 未配置或接口不可用时退回内置清单, 服务照常可用。
+enabled = true
+url = ""                  # 同时提供应用与介质服务器
+applications_url = ""     # 也可分开给两个地址
+media_servers_url = ""
+api_key_env = "BRA_CATALOG_KEY"  # 清单接口的密钥走环境变量
+auth_header = "Authorization"    # 默认 Bearer
+timeout_seconds = 5
+ttl_seconds = 60          # 清单缓存时间
+
+[server.kb]
+# 知识库: 导入 Markdown, 按问题检索并给出带引用的答案。
+enabled = true
+path = ""                        # 落盘位置; 留空用默认
+max_documents = 200              # 文档数上限
+max_document_bytes = 2097152     # 单份文档大小上限 (2 MiB)
+max_total_bytes = 16777216       # 全部文档总大小上限 (16 MiB)
+top_k = 5                        # 问答默认取用的片段数 (上限 20)
+expand = true                    # 用模型扩展检索词提升召回 (无可用模型时自动跳过)
+import_dir = "/var/lib/backup-restore-agent/kb-inbox"  # "从服务器目录导入"的受限目录; "-" 关闭
+max_records = 200                # 保留的导入记录条数
+seed_dir = "/usr/share/backup-restore-agent/knowledge" # 随包预置文档目录; "-" 关闭预置同步
+
+[llm]
+default_profile = "deepseek"
+
+# profile 的三种密钥写法:
+#   api_key_env  = "BRA_XXX"               环境变量 (部署首选, 见 deploy/env.example)
+#   api_key_file = "/etc/.../llm.key"      0600 文件, 权限过宽会拒绝启动
+#   api_key      = "..."                   仅允许本地端点 (base_url 是 localhost)
+[llm.profiles.deepseek]
+preset = "deepseek"
+api_key_env = "BRA_DEEPSEEK_KEY"
+
+[llm.profiles.qwen]
+preset = "qwen"
+api_key_env = "BRA_QWEN_KEY"
+
+[llm.profiles.kimi]
+preset = "kimi"
+api_key_env = "BRA_KIMI_KEY"
+
+[llm.profiles.local]
+# 内网本地模型, 数据不出网; 建议 14B 以上, 7B 以下抽取质量明显下降
+preset = "ollama"
+model = "qwen2.5:14b"
+
+[llm.profiles.gateway]
+provider = "openai_compat"
+base_url = "https://llm-gateway.intra/v1"
+model = "qwen-max"
+api_key_file = "/etc/backup-restore-agent/llm.key"  # 必须是 0600
+note = "api_key_file 必须是 0600 权限"
+
+[llm.profiles.azure]
+preset = "azure_openai"
+base_url = "https://your-resource.openai.azure.com"
+model = "gpt-4o-mini"
+api_version = "2024-06-01"
+api_key_env = "BRA_AZURE_KEY"

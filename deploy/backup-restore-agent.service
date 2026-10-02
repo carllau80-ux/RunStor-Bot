@@ -1,0 +1,46 @@
+[Unit]
+Description=RunStor Bot (自然语言 -> 备份/恢复计划、服务器巡检、知识库)
+Documentation=file:/opt/backup-restore-agent/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bra
+Group=bra
+
+# 密钥从 0600 的环境变量文件加载, 不出现在命令行与 unit 文件里
+EnvironmentFile=-/etc/backup-restore-agent/env
+
+ExecStart=/opt/backup-restore-agent/bin/backup-restore-agent -config /etc/backup-restore-agent/config.toml
+WorkingDirectory=/opt/backup-restore-agent
+
+Restart=always
+RestartSec=3
+
+# 本服务只做自然语言解析与 JSON 生成, 不需要任何特权
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+# 需要读 /etc/backup-restore-agent 下的配置与密钥
+ReadOnlyPaths=/etc/backup-restore-agent
+
+# 网页创建/修改的模型配置 (含密钥) 落在这里。
+# StateDirectory 由 systemd 创建并授权给服务用户, 因此在 ProtectSystem=strict
+# 下依然是可写的 —— 这是让服务能保存配置又不放弃加固的正确做法。
+StateDirectory=backup-restore-agent
+StateDirectoryMode=0700
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bra
+
+[Install]
+WantedBy=multi-user.target
